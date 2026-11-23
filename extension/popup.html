@@ -6,10 +6,14 @@
     body { font-family: system-ui, sans-serif; width: 260px; padding: 12px; }
     button { width: 100%; padding: 8px; margin-bottom: 8px; cursor: pointer; }
     #status { font-size: 13px; color: #444; min-height: 36px; }
+    .note { font-size: 11px; color: #777; margin: -4px 0 8px; }
   </style>
 </head>
 <body>
   <button id="scrape">Scrape this page</button>
+  <button id="scrapeAll">Scrape all pages</button>
+  <div class="note">Limit: max 25 pages per run.</div>
+  <button id="stop" hidden>Stop</button>
   <button id="download">Download CSV</button>
   <button id="clear">Clear saved jobs</button>
   <div id="status"></div>
