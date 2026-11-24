@@ -1,0 +1,294 @@
+@page "/"
+@inject IDbContextFactory<JobDbContext> DbFactory
+
+<PageTitle>Job Finder</PageTitle>
+
+<section class="filters" aria-label="Job filters">
+    <label class="field field-wide">
+        <span>Keyword</span>
+        <input type="search" placeholder="Title, company or description"
+               @bind="keyword" @bind:event="oninput" @bind:after="ApplyFiltersAsync" />
+    </label>
+
+    <label class="field">
+        <span>Location</span>
+        <select @bind="location" @bind:after="ApplyFiltersAsync">
+            <option value="">All locations</option>
+            @foreach (var l in locations)
+            {
+                <option value="@l">@l</option>
+            }
+        </select>
+    </label>
+
+    <label class="field">
+        <span>Work type</span>
+        <select @bind="workType" @bind:after="ApplyFiltersAsync">
+            <option value="">All work types</option>
+            @foreach (var w in workTypes)
+            {
+                <option value="@w">@w</option>
+            }
+        </select>
+    </label>
+
+    <label class="field">
+        <span>Classification</span>
+        <select @bind="classification" @bind:after="OnClassificationChangedAsync">
+            <option value="">All classifications</option>
+            @foreach (var c in classifications)
+            {
+                <option value="@c">@c</option>
+            }
+        </select>
+    </label>
+
+    <label class="field">
+        <span>Sub-classification</span>
+        <select @bind="subClass" @bind:after="ApplyFiltersAsync">
+            <option value="">All sub-classifications</option>
+            @foreach (var s in subClasses)
+            {
+                <option value="@s">@s</option>
+            }
+        </select>
+    </label>
+
+    <label class="field">
+        <span>Listed</span>
+        <select @bind="listedDays" @bind:after="ApplyFiltersAsync">
+            <option value="0">Any time</option>
+            <option value="1">Last 24 hours</option>
+            <option value="3">Last 3 days</option>
+            <option value="7">Last 7 days</option>
+            <option value="14">Last 14 days</option>
+            <option value="30">Last 30 days</option>
+        </select>
+    </label>
+
+    <button type="button" class="link-button" @onclick="ClearFiltersAsync" disabled="@(!HasFilters)">Clear filters</button>
+</section>
+
+<p class="result-count" aria-live="polite">
+    @if (loading)
+    {
+        <text>Loading jobs...</text>
+    }
+    else
+    {
+        <text>@total @(total == 1 ? "job" : "jobs")@(HasFilters ? " match your filters" : " saved")</text>
+    }
+</p>
+
+@if (!loading && total == 0)
+{
+    <div class="empty">
+        @if (HasFilters)
+        {
+            <p>No jobs match these filters. Try removing one or click Clear filters.</p>
+        }
+        else
+        {
+            <p>No jobs yet. Scrape a SEEK page with the extension, then use Send to site (or turn on auto-send).</p>
+        }
+    </div>
+}
+
+<div class="cards">
+    @foreach (var job in jobs)
+    {
+        <article class="card" role="button" tabindex="0"
+                 @onclick="() => Select(job)" @onkeydown="e => OnCardKey(e, job)">
+            <h2>@job.Title</h2>
+            @if (job.Company != "") { <p class="company">@job.Company</p> }
+            @if (job.Location != "") { <p class="location">@job.Location</p> }
+
+            <div class="tags">
+                @if (job.WorkType != "") { <span class="tag">@job.WorkType</span> }
+                @if (job.Salary != "") { <span class="tag tag-salary">@job.Salary</span> }
+            </div>
+
+            @if (job.Classification != "")
+            {
+                <p class="classification">@job.Classification@(job.SubClass != "" ? " > " + job.SubClass : "")</p>
+            }
+            @if (job.Description != "") { <p class="summary">@job.Description</p> }
+            @if (job.Listed != "") { <p class="listed">@job.Listed</p> }
+        </article>
+    }
+</div>
+
+@if (TotalPages > 1)
+{
+    <nav class="pager" aria-label="Pages">
+        <button type="button" @onclick="PrevPageAsync" disabled="@(pageNumber <= 1)">Previous</button>
+        <span>Page @pageNumber of @TotalPages</span>
+        <button type="button" @onclick="NextPageAsync" disabled="@(pageNumber >= TotalPages)">Next</button>
+    </nav>
+}
+
+@if (selected is not null)
+{
+    <div class="overlay" @onclick="Close">
+        <div class="modal" role="dialog" aria-modal="true" aria-label="@selected.Title" @onclick:stopPropagation>
+            <button type="button" class="close" @onclick="Close" aria-label="Close">Close</button>
+            <h2>@selected.Title</h2>
+
+            <dl class="details">
+                @foreach (var (label, value) in Details(selected))
+                {
+                    <dt>@label</dt>
+                    <dd class="@(label == "Description" ? "long" : null)">@(value == "" ? "Not available" : value)</dd>
+                }
+                <dt>Job URL</dt>
+                <dd>
+                    @if (selected.Url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                    {
+                        <a href="@selected.Url" target="_blank" rel="noopener noreferrer">@selected.Url</a>
+                    }
+                    else
+                    {
+                        @(selected.Url == "" ? "Not available" : selected.Url)
+                    }
+                </dd>
+            </dl>
+        </div>
+    </div>
+}
+
+@code {
+    private const int PageSize = 24;
+
+    private string keyword = "", location = "", workType = "", classification = "", subClass = "";
+    private int listedDays, pageNumber = 1, total;
+    private bool loading = true;
+
+    private List<Job> jobs = new();
+    private List<string> locations = new(), workTypes = new(), classifications = new(), subClasses = new();
+    private Job? selected;
+
+    private int TotalPages => Math.Max(1, (int)Math.Ceiling(total / (double)PageSize));
+
+    private bool HasFilters =>
+        keyword.Trim() != "" || location != "" || workType != "" ||
+        classification != "" || subClass != "" || listedDays != 0;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadOptionsAsync();
+        await LoadJobsAsync();
+    }
+
+    private static Task<List<string>> DistinctAsync(IQueryable<string> values) =>
+        values.Where(s => s != "").Distinct().OrderBy(s => s).ToListAsync();
+
+    private async Task LoadOptionsAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        locations = await DistinctAsync(db.Jobs.Select(j => j.Location));
+        workTypes = await DistinctAsync(db.Jobs.Select(j => j.WorkType));
+        classifications = await DistinctAsync(db.Jobs.Select(j => j.Classification));
+
+        var cls = classification;
+        subClasses = await DistinctAsync(
+            db.Jobs.Where(j => cls == "" || j.Classification == cls).Select(j => j.SubClass));
+    }
+
+    private async Task LoadJobsAsync()
+    {
+        loading = true;
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        var q = db.Jobs.AsNoTracking().AsQueryable();
+
+        var k = keyword.Trim();
+        if (k != "")
+        {
+            var pattern = $"%{k}%";
+            q = q.Where(j => EF.Functions.Like(j.Title, pattern)
+                          || EF.Functions.Like(j.Company, pattern)
+                          || EF.Functions.Like(j.Description, pattern));
+        }
+
+        var loc = location; var wt = workType; var cls = classification; var sub = subClass;
+        if (loc != "") q = q.Where(j => j.Location == loc);
+        if (wt != "") q = q.Where(j => j.WorkType == wt);
+        if (cls != "") q = q.Where(j => j.Classification == cls);
+        if (sub != "") q = q.Where(j => j.SubClass == sub);
+
+        if (listedDays > 0)
+        {
+            var cutoff = DateTime.UtcNow.AddDays(-listedDays);
+            q = q.Where(j => j.ListedDate != null && j.ListedDate >= cutoff);
+        }
+
+        total = await q.CountAsync();
+        if (pageNumber > TotalPages) pageNumber = TotalPages;
+
+        jobs = await q
+            .OrderByDescending(j => j.ListedDate)
+            .ThenByDescending(j => j.ScrapedAt)
+            .Skip((pageNumber - 1) * PageSize)
+            .Take(PageSize)
+            .ToListAsync();
+
+        loading = false;
+    }
+
+    private async Task ApplyFiltersAsync()
+    {
+        pageNumber = 1;
+        await LoadJobsAsync();
+    }
+
+    private async Task OnClassificationChangedAsync()
+    {
+        subClass = "";
+        await LoadOptionsAsync();
+        await ApplyFiltersAsync();
+    }
+
+    private async Task ClearFiltersAsync()
+    {
+        keyword = location = workType = classification = subClass = "";
+        listedDays = 0;
+        await LoadOptionsAsync();
+        await ApplyFiltersAsync();
+    }
+
+    private async Task PrevPageAsync()
+    {
+        if (pageNumber > 1) { pageNumber--; await LoadJobsAsync(); }
+    }
+
+    private async Task NextPageAsync()
+    {
+        if (pageNumber < TotalPages) { pageNumber++; await LoadJobsAsync(); }
+    }
+
+    private void Select(Job job) => selected = job;
+    private void Close() => selected = null;
+
+    private void OnCardKey(KeyboardEventArgs e, Job job)
+    {
+        if (e.Key is "Enter" or " ") Select(job);
+    }
+
+    private static string Utc(DateTime d) => d.ToString("yyyy-MM-dd HH:mm") + " UTC";
+
+    private static IEnumerable<(string Label, string Value)> Details(Job j) => new (string, string)[]
+    {
+        ("Job ID", j.Id),
+        ("Company", j.Company),
+        ("Location", j.Location),
+        ("Salary", j.Salary),
+        ("Work type", j.WorkType),
+        ("Classification", j.Classification),
+        ("Sub-classification", j.SubClass),
+        ("Listed (as shown on SEEK)", j.Listed),
+        ("Listed (approximate date)", j.ListedDate is { } d ? d.ToString("yyyy-MM-dd") : ""),
+        ("Description", j.Description),
+        ("Scraped", Utc(j.ScrapedAt)),
+        ("Received by this site", Utc(j.ReceivedAt)),
+    };
+}

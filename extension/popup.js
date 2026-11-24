@@ -12,6 +12,51 @@ async function updateCount() {
   statusEl.textContent = `${Object.keys(jobs).length} jobs saved.`;
 }
 
+// ---- Send to the Blazor site ----
+const API_BASE = "http://localhost:5000";
+const SEND_BATCH = 200;
+
+async function isAutoSend() {
+  const { autoSend = false } = await chrome.storage.local.get("autoSend");
+  return autoSend;
+}
+
+async function sendBatch(jobs) {
+  let res;
+  try {
+    res = await fetch(`${API_BASE}/api/jobs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(jobs)
+    });
+  } catch (e) {
+    throw new Error(`can't reach ${API_BASE}. Is the site running?`);
+  }
+  if (!res.ok) throw new Error(`the site responded with ${res.status}`);
+  return await res.json();
+}
+
+// Sends jobs in batches. Returns { added, updated }.
+async function sendJobs(jobs) {
+  let added = 0, updated = 0;
+  for (let i = 0; i < jobs.length; i += SEND_BATCH) {
+    const r = await sendBatch(jobs.slice(i, i + SEND_BATCH));
+    added += r.added;
+    updated += r.updated;
+  }
+  return { added, updated };
+}
+
+// Same as sendJobs but never throws; returns a status sentence.
+async function trySend(jobs) {
+  try {
+    const r = await sendJobs(jobs);
+    return `Sent to site: ${r.added} new, ${r.updated} updated.`;
+  } catch (e) {
+    return `Could not send to site: ${e.message}`;
+  }
+}
+
 async function requestJobs(tab) {
   try {
     return await chrome.tabs.sendMessage(tab.id, { type: "SCRAPE" });
@@ -38,7 +83,9 @@ document.getElementById("scrape").addEventListener("click", async () => {
       saved[job.id] = job;
     }
     await chrome.storage.local.set({ jobs: saved });
-    statusEl.textContent = `Found ${found.length}, ${added} new. Total saved: ${Object.keys(saved).length}.`;
+    let msg = `Found ${found.length}, ${added} new. Total saved: ${Object.keys(saved).length}.`;
+    if (await isAutoSend()) msg += " " + await trySend(found);
+    statusEl.textContent = msg;
   } catch (e) {
     statusEl.textContent = "Error: " + e.message + " (URL: " + (tab?.url || "unknown") + ")";
   }
@@ -97,7 +144,7 @@ async function saveJobs(found) {
 }
 
 function setBusy(busy) {
-  for (const id of ["scrape", "scrapeAll", "download", "clear"]) document.getElementById(id).disabled = busy;
+  for (const id of ["scrape", "scrapeAll", "sendAll", "download", "clear"]) document.getElementById(id).disabled = busy;
   document.getElementById("stop").hidden = !busy;
 }
 
@@ -116,6 +163,8 @@ document.getElementById("scrapeAll").addEventListener("click", async () => {
   const seenIds = new Set();
   let totalFound = 0, totalAdded = 0, pagesDone = 0, reason = "";
   let workTab = null;
+  const autoSend = await isAutoSend();
+  let siteAdded = 0, siteUpdated = 0, sendError = "";
 
   try {
     for (let i = 0; i < MAX_PAGES; i++) {
@@ -151,6 +200,16 @@ document.getElementById("scrapeAll").addEventListener("click", async () => {
       fresh.forEach(j => seenIds.add(j.id));
 
       const { added } = await saveJobs(found);   // saved per page, so nothing is lost if the popup closes
+
+      if (autoSend && !sendError) {
+        try {
+          const r = await sendJobs(found);
+          siteAdded += r.added;
+          siteUpdated += r.updated;
+        } catch (e) {
+          sendError = e.message;   // keep scraping; jobs are still saved locally
+        }
+      }
       totalFound += found.length;
       totalAdded += added;
       pagesDone++;
@@ -166,8 +225,28 @@ document.getElementById("scrapeAll").addEventListener("click", async () => {
   }
 
   const saved = await getSaved();
-  statusEl.textContent = `${reason} Scraped ${pagesDone} page(s), ${totalFound} jobs found, ${totalAdded} new. Total saved: ${Object.keys(saved).length}.`;
+  let siteMsg = "";
+  if (autoSend) {
+    siteMsg = sendError
+      ? ` Could not send to site: ${sendError}. Use Send to site to retry.`
+      : ` Sent to site: ${siteAdded} new, ${siteUpdated} updated.`;
+  }
+  statusEl.textContent = `${reason} Scraped ${pagesDone} page(s), ${totalFound} jobs found, ${totalAdded} new. Total saved: ${Object.keys(saved).length}.${siteMsg}`;
 });
+
+document.getElementById("sendAll").addEventListener("click", async () => {
+  const jobs = Object.values(await getSaved());
+  if (!jobs.length) { statusEl.textContent = "Nothing to send yet."; return; }
+  setBusy(true);
+  document.getElementById("stop").hidden = true;
+  statusEl.textContent = `Sending ${jobs.length} jobs to the site...`;
+  statusEl.textContent = await trySend(jobs);
+  setBusy(false);
+});
+
+const autoSendEl = document.getElementById("autoSend");
+isAutoSend().then(v => { autoSendEl.checked = v; });
+autoSendEl.addEventListener("change", () => chrome.storage.local.set({ autoSend: autoSendEl.checked }));
 
 function csvCell(value) {
   return `"${String(value ?? "").replace(/"/g, '""')}"`;
