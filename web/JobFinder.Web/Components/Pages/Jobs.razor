@@ -90,6 +90,20 @@
     }
 </p>
 
+<section class="queue-bar" aria-label="Detail scrape queue">
+    <button type="button" class="primary" @onclick="QueueAsync" disabled="@(!CanQueue)">Queue details scrape</button>
+    <span class="queue-note">@QueueNote</span>
+    @if (queueCount > 0)
+    {
+        <button type="button" class="link-button" @onclick="ClearQueueAsync">Clear queue (@queueCount waiting)</button>
+    }
+</section>
+
+@if (queueMessage != "")
+{
+    <p class="queue-message" role="status">@queueMessage</p>
+}
+
 @if (!loading && total == 0)
 {
     <div class="empty">
@@ -107,28 +121,7 @@
 <div class="cards">
     @foreach (var job in jobs)
     {
-        <article class="card" role="button" tabindex="0"
-                 @onclick="() => Select(job)" @onkeydown="e => OnCardKey(e, job)">
-            <h2>@job.Title</h2>
-            @if (job.Company != "") { <p class="company">@job.Company</p> }
-            @if (job.Location != "") { <p class="location">@job.Location</p> }
-
-            <div class="tags">
-                @if (job.ApplicantStrength != "")
-                {
-                    <span class="tag @(job.ApplicantStrength == ApplicantStrengths.VeryStrong ? "tag-very" : "tag-strong")">@job.ApplicantStrength</span>
-                }
-                @if (job.WorkType != "") { <span class="tag">@job.WorkType</span> }
-                @if (job.Salary != "") { <span class="tag tag-salary">@job.Salary</span> }
-            </div>
-
-            @if (job.Classification != "")
-            {
-                <p class="classification">@job.Classification@(job.SubClass != "" ? " > " + job.SubClass : "")</p>
-            }
-            @if (job.Description != "") { <p class="summary">@job.Description</p> }
-            @if (job.Listed != "") { <p class="listed">@job.Listed</p> }
-        </article>
+        <JobCard Item="job" OnSelected="Select" />
     }
 </div>
 
@@ -147,25 +140,7 @@
         <div class="modal" role="dialog" aria-modal="true" aria-label="@selected.Title" @onclick:stopPropagation>
             <button type="button" class="close" @onclick="Close" aria-label="Close">Close</button>
             <h2>@selected.Title</h2>
-
-            <dl class="details">
-                @foreach (var (label, value) in Details(selected))
-                {
-                    <dt>@label</dt>
-                    <dd class="@(label == "Description" ? "long" : null)">@(value == "" ? "Not available" : value)</dd>
-                }
-                <dt>Job URL</dt>
-                <dd>
-                    @if (selected.Url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-                    {
-                        <a href="@selected.Url" target="_blank" rel="noopener noreferrer">@selected.Url</a>
-                    }
-                    else
-                    {
-                        @(selected.Url == "" ? "Not available" : selected.Url)
-                    }
-                </dd>
-            </dl>
+            <DetailList Rows="JobDisplay.JobRows(selected)" />
         </div>
     </div>
 }
@@ -173,9 +148,13 @@
 @code {
     private const int PageSize = 24;
 
+    /// <summary>The most jobs that can be queued for a detail scrape in one go.</summary>
+    private const int MaxQueue = 75;
+
     private string keyword = "", location = "", workType = "", classification = "", subClass = "", applicant = "";
-    private int listedDays, pageNumber = 1, total;
+    private int listedDays, pageNumber = 1, total, queueCount;
     private bool loading = true;
+    private string queueMessage = "";
 
     private List<Job> jobs = new();
     private List<string> locations = new(), workTypes = new(), classifications = new(), subClasses = new();
@@ -187,9 +166,17 @@
         keyword.Trim() != "" || location != "" || workType != "" ||
         classification != "" || subClass != "" || applicant != "" || listedDays != 0;
 
+    private bool CanQueue => !loading && total > 0 && total <= MaxQueue;
+
+    private string QueueNote =>
+        total == 0 ? "" :
+        total > MaxQueue ? $"Too many jobs to queue ({total}). Narrow the filters to {MaxQueue} or fewer." :
+        $"Queues the {total} filtered {(total == 1 ? "job" : "jobs")} so the extension can scrape their full details.";
+
     protected override async Task OnInitializedAsync()
     {
         await LoadOptionsAsync();
+        await LoadQueueCountAsync();
         await LoadJobsAsync();
     }
 
@@ -208,11 +195,15 @@
             db.Jobs.Where(j => cls == "" || j.Classification == cls).Select(j => j.SubClass));
     }
 
-    private async Task LoadJobsAsync()
+    private async Task LoadQueueCountAsync()
     {
-        loading = true;
         await using var db = await DbFactory.CreateDbContextAsync();
+        queueCount = await db.QueuedJobs.CountAsync();
+    }
 
+    /// <summary>All jobs matching the current filters, ignoring paging.</summary>
+    private IQueryable<Job> FilteredJobs(JobDbContext db)
+    {
         var q = db.Jobs.AsNoTracking().AsQueryable();
 
         var k = keyword.Trim();
@@ -240,12 +231,22 @@
             q = q.Where(j => j.ListedDate != null && j.ListedDate >= cutoff);
         }
 
+        return q;
+    }
+
+    private IOrderedQueryable<Job> InDisplayOrder(IQueryable<Job> q) =>
+        q.OrderByDescending(j => j.ListedDate).ThenByDescending(j => j.ScrapedAt);
+
+    private async Task LoadJobsAsync()
+    {
+        loading = true;
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        var q = FilteredJobs(db);
         total = await q.CountAsync();
         if (pageNumber > TotalPages) pageNumber = TotalPages;
 
-        jobs = await q
-            .OrderByDescending(j => j.ListedDate)
-            .ThenByDescending(j => j.ScrapedAt)
+        jobs = await InDisplayOrder(q)
             .Skip((pageNumber - 1) * PageSize)
             .Take(PageSize)
             .ToListAsync();
@@ -256,6 +257,7 @@
     private async Task ApplyFiltersAsync()
     {
         pageNumber = 1;
+        queueMessage = "";
         await LoadJobsAsync();
     }
 
@@ -274,6 +276,39 @@
         await ApplyFiltersAsync();
     }
 
+    /// <summary>Replaces the queue with every job matching the current filters (all pages, not just this one).</summary>
+    private async Task QueueAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var ids = await InDisplayOrder(FilteredJobs(db)).Select(j => j.Id).ToListAsync();
+
+        if (ids.Count == 0 || ids.Count > MaxQueue)
+        {
+            queueMessage = ids.Count == 0
+                ? "No jobs to queue."
+                : $"Too many jobs to queue ({ids.Count}). Narrow the filters to {MaxQueue} or fewer.";
+            return;
+        }
+
+        await db.QueuedJobs.ExecuteDeleteAsync();
+
+        // Spread QueuedAt by a millisecond each so the extension scrapes them in the order shown here.
+        var now = DateTime.UtcNow;
+        db.QueuedJobs.AddRange(ids.Select((id, i) => new QueuedJob { JobId = id, QueuedAt = now.AddMilliseconds(i) }));
+        await db.SaveChangesAsync();
+
+        queueCount = ids.Count;
+        queueMessage = $"Queued {ids.Count} {(ids.Count == 1 ? "job" : "jobs")}. In the extension, click Scrape queued details.";
+    }
+
+    private async Task ClearQueueAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        await db.QueuedJobs.ExecuteDeleteAsync();
+        queueCount = 0;
+        queueMessage = "Queue cleared.";
+    }
+
     private async Task PrevPageAsync()
     {
         if (pageNumber > 1) { pageNumber--; await LoadJobsAsync(); }
@@ -286,32 +321,4 @@
 
     private void Select(Job job) => selected = job;
     private void Close() => selected = null;
-
-    private void OnCardKey(KeyboardEventArgs e, Job job)
-    {
-        if (e.Key is "Enter" or " ") Select(job);
-    }
-
-    private static string Utc(DateTime d) => d.ToString("yyyy-MM-dd HH:mm") + " UTC";
-
-    private static IEnumerable<(string Label, string Value)> Details(Job j) => new (string, string)[]
-    {
-        ("Job ID", j.Id),
-        ("Company", j.Company),
-        ("Location", j.Location),
-        ("Salary", j.Salary),
-        ("Work type", j.WorkType),
-        ("Classification", j.Classification),
-        ("Sub-classification", j.SubClass),
-        ("Listed (as shown on SEEK)", j.Listed),
-        ("Listed (approximate date)", j.ListedDate is { } d ? d.ToString("yyyy-MM-dd") : ""),
-        ("Applicant strength", j.ApplicantStrength),
-        ("Badges", j.Badges),
-        ("Listing status", j.ListingStatus),
-        ("Ad type", j.AdType),
-        ("Section", j.Section),
-        ("Description", j.Description),
-        ("Scraped", Utc(j.ScrapedAt)),
-        ("Received by this site", Utc(j.ReceivedAt)),
-    };
 }

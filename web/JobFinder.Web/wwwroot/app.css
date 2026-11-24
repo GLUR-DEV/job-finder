@@ -194,3 +194,40 @@ input[type="search"], select {
   .details { grid-template-columns: 1fr; gap: 0.1rem; }
   .details dd { margin-bottom: 0.6rem; }
 }
+
+/* Navigation */
+.site-header { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 2rem; }
+.site-nav { display: flex; gap: 1.25rem; }
+.site-nav a {
+  padding: 0.25rem 0;
+  color: var(--muted);
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+}
+.site-nav a:hover { color: var(--ink); }
+.site-nav a.active { color: var(--ink); font-weight: 600; border-bottom-color: var(--accent); }
+
+/* Detail scrape queue */
+.queue-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; margin: 0 0 1rem; }
+.primary {
+  padding: 0.5rem 1rem;
+  font: inherit;
+  font-weight: 600;
+  color: var(--accent-ink);
+  background: var(--accent);
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.primary:disabled { opacity: 0.4; cursor: default; }
+.queue-note { color: var(--muted); font-size: 0.9rem; }
+.queue-message { margin: 0 0 1rem; padding: 0.6rem 0.8rem; background: var(--accent-soft); border-radius: 6px; }
+
+/* Cards and details panel extras */
+.card .note-line { font-size: 0.8rem; color: var(--muted); }
+.modal h3 { margin: 1.5rem 0 0.75rem; font-size: 1rem; }
+.muted { color: var(--muted); }
+
+/* Favourites pills */
+.tag-contact { font-weight: 600; color: var(--accent); background: transparent; border: 1px solid var(--accent); }
+.tag-hours { font-weight: 600; background: var(--accent-soft); border: 1px solid var(--accent); }

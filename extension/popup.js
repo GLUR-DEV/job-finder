@@ -70,14 +70,18 @@ async function trySend(jobs) {
   }
 }
 
-async function requestJobs(tab) {
+async function requestFromTab(tab, type) {
   try {
-    return await chrome.tabs.sendMessage(tab.id, { type: "SCRAPE" });
+    return await chrome.tabs.sendMessage(tab.id, { type });
   } catch (e) {
-    // Content script isn't in the page yet (tab opened before install). Inject it.
+    // Content script isn't there yet (for example the tab was open before the extension loaded).
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
-    return await chrome.tabs.sendMessage(tab.id, { type: "SCRAPE" });
+    return await chrome.tabs.sendMessage(tab.id, { type });
   }
+}
+
+function requestJobs(tab) {
+  return requestFromTab(tab, "SCRAPE");
 }
 
 document.getElementById("scrape").addEventListener("click", async () => {
@@ -162,7 +166,7 @@ async function saveJobs(found) {
 }
 
 function setBusy(busy) {
-  for (const id of ["scrape", "scrapeAll", "sendAll", "download", "clear"]) document.getElementById(id).disabled = busy;
+  for (const id of ["scrape", "scrapeAll", "sendAll", "scrapeQueue", "download", "clear"]) document.getElementById(id).disabled = busy;
   document.getElementById("stop").hidden = !busy;
 }
 
@@ -284,6 +288,111 @@ strongOnlyEl.addEventListener("change", () => chrome.storage.local.set({ strongO
 const autoSendEl = document.getElementById("autoSend");
 isAutoSend().then(v => { autoSendEl.checked = v; });
 autoSendEl.addEventListener("change", () => chrome.storage.local.set({ autoSend: autoSendEl.checked }));
+
+// ---- Scrape queued job details ----
+const SEEK_URL = /^https:\/\/([^/]+\.)?seek\.(com(\.au)?|co\.nz)\//;
+const DETAIL_WAIT_MS = 10000;
+const DETAIL_DELAY_MS = 1500;   // pause between job pages to be polite to SEEK
+
+async function fetchQueue() {
+  let res;
+  try {
+    res = await fetch(`${API_BASE}/api/queue`);
+  } catch (e) {
+    throw new Error(`can't reach ${API_BASE}. Is the site running?`);
+  }
+  if (!res.ok) throw new Error(`the site responded with ${res.status}`);
+  return await res.json();
+}
+
+async function postDetail(detail) {
+  let res;
+  try {
+    res = await fetch(`${API_BASE}/api/job-details`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(detail)
+    });
+  } catch (e) {
+    throw new Error(`can't reach ${API_BASE}. Is the site running?`);
+  }
+  if (!res.ok) throw new Error(`the site responded with ${res.status}`);
+}
+
+// Job pages render after the tab "completes", so poll until the title and ad text are there.
+async function scrapeDetailWhenReady(tab) {
+  const deadline = Date.now() + DETAIL_WAIT_MS;
+  while (true) {
+    try {
+      const res = await requestFromTab(tab, "SCRAPE_DETAIL");
+      const d = res && res.detail;
+      if (d && d.title && d.description) return d;
+    } catch (e) { /* content script not ready yet */ }
+    if (Date.now() > deadline) return null;
+    await sleep(500);
+  }
+}
+
+document.getElementById("scrapeQueue").addEventListener("click", async () => {
+  stopRequested = false;
+  setBusy(true);
+  let workTab = null;
+  let done = 0, total = 0, stopped = false, fatal = "", lastError = "";
+  const failed = [];
+
+  try {
+    statusEl.textContent = "Reading the queue from the site...";
+    const queue = await fetchQueue();
+    total = queue.length;
+
+    if (!total) {
+      statusEl.textContent = "The queue is empty. On the site, filter your jobs and click Queue details scrape.";
+      return;
+    }
+
+    for (let i = 0; i < queue.length; i++) {
+      if (stopRequested) { stopped = true; break; }
+      const item = queue[i];
+      statusEl.textContent = `Scraping job ${i + 1}/${total}... ${done} saved, ${failed.length} failed.`;
+
+      try {
+        if (!item.url || !SEEK_URL.test(item.url)) throw new Error("not a SEEK job URL");
+
+        if (!workTab) workTab = await chrome.tabs.create({ url: item.url, active: false });
+        else await chrome.tabs.update(workTab.id, { url: item.url });
+        await waitForLoad(workTab.id);
+
+        const tab = await chrome.tabs.get(workTab.id);
+        const detail = await scrapeDetailWhenReady(tab);
+        if (!detail) throw new Error("the job page couldn't be read (it may have expired)");
+        if (detail.id && detail.id !== item.id) throw new Error("SEEK showed a different job");
+
+        detail.id = item.id;
+        await postDetail(detail);
+        done++;
+      } catch (e) {
+        failed.push(item.id);
+        lastError = e.message;
+        // If the site itself is down there's no point carrying on.
+        if (/can't reach/.test(e.message)) { fatal = e.message; break; }
+      }
+
+      await sleep(DETAIL_DELAY_MS);
+    }
+  } catch (e) {
+    fatal = e.message;
+  } finally {
+    if (workTab) { try { await chrome.tabs.remove(workTab.id); } catch (e) {} }
+    setBusy(false);
+  }
+
+  if (!total) return;
+  let msg = `Saved details for ${done} of ${total} jobs.`;
+  if (failed.length) msg += ` ${failed.length} failed (last error: ${lastError}). They stay in the queue.`;
+  if (stopped) msg = "Stopped by you. " + msg;
+  if (fatal) msg = `Could not continue: ${fatal}. ` + msg;
+  statusEl.textContent = msg;
+});
 
 function csvCell(value) {
   return `"${String(value ?? "").replace(/"/g, '""')}"`;

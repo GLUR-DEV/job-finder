@@ -46,4 +46,7 @@ public class Job
 
     /// <summary>When this site last received the job from the extension (UTC).</summary>
     public DateTime ReceivedAt { get; set; }
+
+    /// <summary>Set once the extension has scraped this job's own page.</summary>
+    public JobDetail? Detail { get; set; }
 }

@@ -1,0 +1,45 @@
+<article class="card" role="button" tabindex="0" @onclick="() => OnSelected.InvokeAsync(Item)" @onkeydown="OnKey">
+    <h2>@Item.Title</h2>
+    @if (Item.Company != "") { <p class="company">@Item.Company</p> }
+    @if (Item.Location != "") { <p class="location">@Item.Location</p> }
+
+    <div class="tags">
+        @if (Item.ApplicantStrength != "")
+        {
+            <span class="tag @(Item.ApplicantStrength == ApplicantStrengths.VeryStrong ? "tag-very" : "tag-strong")">@Item.ApplicantStrength</span>
+        }
+        @if (Item.WorkType != "") { <span class="tag">@Item.WorkType</span> }
+        @if (Item.Salary != "") { <span class="tag tag-salary">@Item.Salary</span> }
+        @if (ExtraTags is not null)
+        {
+            @foreach (var pill in ExtraTags)
+            {
+                <span class="tag @pill.Css">@pill.Text</span>
+            }
+        }
+    </div>
+
+    @if (Item.Classification != "")
+    {
+        <p class="classification">@Item.Classification@(Item.SubClass != "" ? " > " + Item.SubClass : "")</p>
+    }
+    @if (Item.Description != "") { <p class="summary">@Item.Description</p> }
+    @if (Item.Listed != "") { <p class="listed">@Item.Listed</p> }
+    @if (Note is not null) { <p class="note-line">@Note</p> }
+</article>
+
+@code {
+    [Parameter, EditorRequired] public Job Item { get; set; } = default!;
+    [Parameter] public EventCallback<Job> OnSelected { get; set; }
+
+    /// <summary>Optional extra pills shown after the usual tags.</summary>
+    [Parameter] public IReadOnlyList<Pill>? ExtraTags { get; set; }
+
+    /// <summary>Optional small line at the bottom of the card.</summary>
+    [Parameter] public string? Note { get; set; }
+
+    private async Task OnKey(KeyboardEventArgs e)
+    {
+        if (e.Key is "Enter" or " ") await OnSelected.InvokeAsync(Item);
+    }
+}

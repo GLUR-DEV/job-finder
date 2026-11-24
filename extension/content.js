@@ -23,7 +23,10 @@ const DESCRIPTION_SELECTORS = ['span[data-automation="jobShortDescription"]', '[
 const STRONG = "Strong applicant";
 const VERY_STRONG = "Very strong applicant";
 
-function clean(s) { return (s || "").replace(/\s+/g, " ").trim(); }
+// Collapses whitespace and drops invisible characters SEEK adds (word joiners, zero-width spaces, object-replacement marks).
+function clean(s) {
+  return (s || "").replace(/[\u2060\u200b-\u200d\ufeff\ufffc]/g, "").replace(/\s+/g, " ").trim();
+}
 
 function firstText(card, selectors) {
   for (const sel of selectors) {
@@ -131,6 +134,124 @@ function scrapeJobs() {
   return jobs;
 }
 
+
+// ---- Job detail page scraping ----
+
+function textOf(selector) {
+  const el = document.querySelector(selector);
+  return el ? clean(el.textContent) : "";
+}
+
+// First text-only <span> whose text matches the pattern (SEEK gives some lines no data-automation hook).
+function leafSpanText(pattern) {
+  for (const s of document.querySelectorAll("span")) {
+    if (s.querySelector("*")) continue;
+    const t = clean(s.textContent);
+    if (pattern.test(t)) return t;
+  }
+  return "";
+}
+
+// Keeps paragraph and list line breaks; drops non-breaking spaces and SEEK's stray object-replacement characters.
+function textBlock(el) {
+  const raw = el.innerText || el.textContent || "";
+  return raw
+    .replace(/\u00a0/g, " ")
+    .replace(/\ufffc/g, "")
+    .replace(/[ \t]+/g, " ")
+    .split("\n").map(l => l.trim()).join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+// SEEK shows contact details partly hidden ("••••@company.com") but keeps the real value in data-contact-match.
+function contactsOf(adEl) {
+  const emails = new Set(), phones = new Set(), unmask = [];
+  adEl.querySelectorAll('[data-contact-match], a[href^="mailto:"], a[href^="tel:"]').forEach(el => {
+    const href = el.getAttribute("href") || "";
+    let value = el.getAttribute("data-contact-match") || "";
+    try {
+      if (!value && /^mailto:/i.test(href)) value = decodeURIComponent(href.slice(7).split("?")[0]);
+      if (!value && /^tel:/i.test(href)) value = decodeURIComponent(href.slice(4));
+    } catch (e) { /* bad escape in href, ignore */ }
+    value = clean(value);
+    if (!value) return;
+
+    if (value.includes("@")) emails.add(value);
+    else if (value.replace(/\D/g, "").length >= 6) phones.add(value);
+
+    const shown = clean(el.textContent);
+    if (shown && shown !== value) unmask.push([shown, value]);
+  });
+  return { emails: [...emails], phones: [...phones], unmask };
+}
+
+// Only the skills visible on the page. "Show all" / "+N more" is deliberately not clicked.
+function skillsOf() {
+  const result = { summary: "", matched: [], suggested: [] };
+  const summaryEl = [...document.querySelectorAll("span")]
+    .find(s => !s.querySelector("*") && /skills and credentials/i.test(s.textContent));
+  if (!summaryEl) return result;
+
+  result.summary = clean(summaryEl.textContent);
+  summaryEl.parentElement.querySelectorAll("div[title]").forEach(chip => {
+    const name = clean(chip.getAttribute("title"));
+    if (!name) return;
+    // Chips SEEK suggests adding to your profile have an "Add <skill>" button; matched ones don't.
+    (chip.querySelector('button[aria-label^="Add "]') ? result.suggested : result.matched).push(name);
+  });
+  return result;
+}
+
+function employerQuestionsOf() {
+  const h2 = [...document.querySelectorAll("h2")].find(h => /^employer questions$/i.test(clean(h.textContent)));
+  const section = h2 && h2.closest("section");
+  if (!section) return [];
+  return [...section.querySelectorAll("li")].map(li => clean(li.textContent)).filter(Boolean);
+}
+
+// Reads a job's own page. Never touches the "Report this job advert" form, Featured jobs or the salary teaser.
+function scrapeJobDetail() {
+  const adEl = document.querySelector('[data-automation="jobAdDetails"]');
+  const contacts = adEl ? contactsOf(adEl) : { emails: [], phones: [], unmask: [] };
+
+  let description = adEl ? textBlock(adEl) : "";
+  for (const [shown, real] of contacts.unmask) description = description.split(shown).join(real);
+
+  const skills = skillsOf();
+  const apply = document.querySelector('a[data-automation="job-detail-apply"]');
+  const more = document.querySelector('a[data-automation="job-details-header-more-jobs"]');
+  const idMatch = location.pathname.match(/\/job\/(\d+)/);
+
+  const badges = [...document.querySelectorAll('[data-automation="jdv-badges-section"] [data-testid="job-status-badge"]')]
+    .map(b => clean(b.textContent)).filter(Boolean);
+
+  return {
+    id: idMatch ? idMatch[1] : "",
+    url: location.origin + location.pathname,
+    title: textOf('[data-automation="job-detail-title"]'),
+    advertiser: textOf('[data-automation="advertiser-name"]'),
+    advertiserUrl: more ? more.href : "",
+    location: textOf('[data-automation="job-detail-location"]'),
+    classification: textOf('[data-automation="job-detail-classifications"]'),
+    workType: textOf('[data-automation="job-detail-work-type"]'),
+    salary: textOf('[data-automation="job-detail-salary"]'),
+    posted: leafSpanText(/^Posted\b/i),
+    applicationVolume: leafSpanText(/application volume$/i),
+    applyType: apply ? clean(apply.textContent) : "",
+    applyUrl: apply ? apply.href : "",
+    badges: [...new Set(badges)].join("; "),
+    skillsSummary: skills.summary,
+    skillsMatched: skills.matched.join("; "),
+    skillsSuggested: skills.suggested.join("; "),
+    employerQuestions: employerQuestionsOf().join("\n"),
+    emails: contacts.emails.join("; "),
+    phones: contacts.phones.join("; "),
+    description,
+    scrapedAt: new Date().toISOString()
+  };
+}
+
 // Reads SEEK's pagination and result counter so the popup knows when the real results end.
 // Page 3 of 3 has no <a rel="next"> (Next is a dead <span>), and the current page is aria-current="page".
 function readPager() {
@@ -158,6 +279,8 @@ if (!window.__seekScraperLoaded) {
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg && msg.type === "SCRAPE") {
       sendResponse({ jobs: scrapeJobs(), pager: readPager() });
+    } else if (msg && msg.type === "SCRAPE_DETAIL") {
+      sendResponse({ detail: scrapeJobDetail() });
     }
     return true;
   });

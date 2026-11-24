@@ -1,0 +1,205 @@
+@page "/favourites"
+@inject IDbContextFactory<JobDbContext> DbFactory
+
+<PageTitle>Favourites - Job Finder</PageTitle>
+
+<section class="filters" aria-label="Search and filter favourites">
+    <label class="field field-wide">
+        <span>Keyword</span>
+        <input type="search" placeholder="Title, company, ad text, skills, email or phone"
+               @bind="keyword" @bind:event="oninput" @bind:after="ApplyAsync" />
+    </label>
+
+    <label class="field">
+        <span>Contact details</span>
+        <select @bind="contact" @bind:after="ApplyAsync">
+            <option value="">Any</option>
+            <option value="phone">Phone only</option>
+            <option value="email">Email only</option>
+            <option value="both">Phone &amp; email</option>
+            <option value="none">No contact details</option>
+        </select>
+    </label>
+
+    <label class="field">
+        <span>Work hours</span>
+        <select @bind="hours" @bind:after="ApplyAsync">
+            <option value="">Any</option>
+            <option value="yes">Hours available</option>
+            <option value="no">No hours found</option>
+        </select>
+    </label>
+
+    <button type="button" class="link-button" @onclick="ClearAsync" disabled="@(!HasFilters)">Clear filters</button>
+</section>
+
+<p class="result-count" aria-live="polite">
+    @if (loading)
+    {
+        <text>Loading favourites...</text>
+    }
+    else
+    {
+        <text>@total @(total == 1 ? "job" : "jobs")@(HasFilters ? " match your filters" : " with full details")</text>
+    }
+</p>
+
+@if (!loading && total == 0)
+{
+    <div class="empty">
+        @if (HasFilters)
+        {
+            <p>No favourites match these filters. Try removing one or click Clear filters.</p>
+        }
+        else
+        {
+            <p>No favourites yet. On the Jobs page, filter to 75 jobs or fewer and click Queue details scrape, then click Scrape queued details in the extension.</p>
+        }
+    </div>
+}
+
+<div class="cards">
+    @foreach (var d in items)
+    {
+        <JobCard Item="d.Job!" ExtraTags="PillsFor(d)" Note="@($"Details scraped {JobDisplay.Utc(d.ScrapedAt)}")" OnSelected="Select" />
+    }
+</div>
+
+@if (TotalPages > 1)
+{
+    <nav class="pager" aria-label="Pages">
+        <button type="button" @onclick="PrevPageAsync" disabled="@(pageNumber <= 1)">Previous</button>
+        <span>Page @pageNumber of @TotalPages</span>
+        <button type="button" @onclick="NextPageAsync" disabled="@(pageNumber >= TotalPages)">Next</button>
+    </nav>
+}
+
+@if (selected is { Job: not null } sel)
+{
+    <div class="overlay" @onclick="Close">
+        <div class="modal" role="dialog" aria-modal="true" aria-label="@sel.Job.Title" @onclick:stopPropagation>
+            <button type="button" class="close" @onclick="Close" aria-label="Close">Close</button>
+            <h2>@sel.Job.Title</h2>
+
+            <h3>From the job page</h3>
+            <DetailList Rows="JobDisplay.DetailRows(sel)" />
+
+            <h3>From the search results card</h3>
+            <DetailList Rows="JobDisplay.JobRows(sel.Job)" />
+        </div>
+    </div>
+}
+
+@code {
+    private const int PageSize = 24;
+
+    private string keyword = "", contact = "", hours = "";
+    private int pageNumber = 1, total;
+    private bool loading = true;
+
+    private List<JobDetail> items = new();
+    private JobDetail? selected;
+
+    private int TotalPages => Math.Max(1, (int)Math.Ceiling(total / (double)PageSize));
+    private bool HasFilters => keyword.Trim() != "" || contact != "" || hours != "";
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    /// <summary>The pills shown on a card: how to make contact, and whether the ad lists work hours.</summary>
+    private static IReadOnlyList<Pill> PillsFor(JobDetail d)
+    {
+        var pills = new List<Pill>();
+
+        var hasPhone = d.Phones != "";
+        var hasEmail = d.Emails != "";
+        if (hasPhone && hasEmail) pills.Add(new Pill("Phone & email", "tag-contact"));
+        else if (hasPhone) pills.Add(new Pill("Phone", "tag-contact"));
+        else if (hasEmail) pills.Add(new Pill("Email", "tag-contact"));
+
+        if (HoursDetector.Has(d.Description)) pills.Add(new Pill("Hours available", "tag-hours"));
+        return pills;
+    }
+
+    private async Task LoadAsync()
+    {
+        loading = true;
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        var q = db.JobDetails.AsNoTracking().Include(d => d.Job).AsQueryable();
+
+        var k = keyword.Trim();
+        if (k != "")
+        {
+            var p = $"%{k}%";
+            q = q.Where(d =>
+                EF.Functions.Like(d.Job!.Title, p) ||
+                EF.Functions.Like(d.Job!.Company, p) ||
+                EF.Functions.Like(d.Job!.Description, p) ||
+                EF.Functions.Like(d.Title, p) ||
+                EF.Functions.Like(d.Advertiser, p) ||
+                EF.Functions.Like(d.Description, p) ||
+                EF.Functions.Like(d.SkillsMatched, p) ||
+                EF.Functions.Like(d.SkillsSuggested, p) ||
+                EF.Functions.Like(d.EmployerQuestions, p) ||
+                EF.Functions.Like(d.Emails, p) ||
+                EF.Functions.Like(d.Phones, p));
+        }
+
+        switch (contact)
+        {
+            case "phone": q = q.Where(d => d.Phones != "" && d.Emails == ""); break;
+            case "email": q = q.Where(d => d.Emails != "" && d.Phones == ""); break;
+            case "both":  q = q.Where(d => d.Emails != "" && d.Phones != ""); break;
+            case "none":  q = q.Where(d => d.Emails == "" && d.Phones == ""); break;
+        }
+
+        var ordered = q.OrderByDescending(d => d.ScrapedAt);
+
+        if (hours == "")
+        {
+            total = await q.CountAsync();
+            if (pageNumber > TotalPages) pageNumber = TotalPages;
+            items = await ordered.Skip((pageNumber - 1) * PageSize).Take(PageSize).ToListAsync();
+        }
+        else
+        {
+            // Hours are found by reading the ad text, which the database can't do, so this filter runs here.
+            // The list of favourites is small, so loading the matches is fine.
+            var wantHours = hours == "yes";
+            var matched = (await ordered.ToListAsync())
+                .Where(d => HoursDetector.Has(d.Description) == wantHours)
+                .ToList();
+
+            total = matched.Count;
+            if (pageNumber > TotalPages) pageNumber = TotalPages;
+            items = matched.Skip((pageNumber - 1) * PageSize).Take(PageSize).ToList();
+        }
+
+        loading = false;
+    }
+
+    private async Task ApplyAsync()
+    {
+        pageNumber = 1;
+        await LoadAsync();
+    }
+
+    private async Task ClearAsync()
+    {
+        keyword = contact = hours = "";
+        await ApplyAsync();
+    }
+
+    private async Task PrevPageAsync()
+    {
+        if (pageNumber > 1) { pageNumber--; await LoadAsync(); }
+    }
+
+    private async Task NextPageAsync()
+    {
+        if (pageNumber < TotalPages) { pageNumber++; await LoadAsync(); }
+    }
+
+    private void Select(Job job) => selected = items.FirstOrDefault(d => d.JobId == job.Id);
+    private void Close() => selected = null;
+}

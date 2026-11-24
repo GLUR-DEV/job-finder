@@ -1,0 +1,24 @@
+<dl class="details">
+    @foreach (var r in Rows)
+    {
+        <dt>@r.Label</dt>
+        <dd class="@(r.Multiline ? "long" : null)">
+            @if (r.Value == "")
+            {
+                <span class="muted">Not available</span>
+            }
+            else if (r.Link && r.Value.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            {
+                <a href="@r.Value" target="_blank" rel="noopener noreferrer">@r.Value</a>
+            }
+            else
+            {
+                @r.Value
+            }
+        </dd>
+    }
+</dl>
+
+@code {
+    [Parameter, EditorRequired] public IEnumerable<Row> Rows { get; set; } = Array.Empty<Row>();
+}

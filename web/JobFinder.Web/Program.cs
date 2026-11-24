@@ -61,6 +61,43 @@ app.MapPost("/api/jobs", async (List<JobDto> incoming, IDbContextFactory<JobDbCo
     return Results.Ok(new { received = incoming.Count, added, updated, skipped = incoming.Count - valid.Count });
 }).DisableAntiforgery();
 
+// Jobs waiting for the extension to scrape their detail page.
+app.MapGet("/api/queue", async (IDbContextFactory<JobDbContext> factory) =>
+{
+    await using var db = await factory.CreateDbContextAsync();
+    var items = await db.QueuedJobs
+        .OrderBy(q => q.QueuedAt)
+        .Select(q => new { id = q.JobId, url = q.Job!.Url })
+        .ToListAsync();
+    return Results.Ok(items);
+});
+
+// Receives one job's detail page from the extension and takes the job off the queue.
+app.MapPost("/api/job-details", async (JobDetailDto dto, IDbContextFactory<JobDbContext> factory) =>
+{
+    var id = dto.Id?.Trim();
+    if (string.IsNullOrEmpty(id))
+        return Results.BadRequest(new { error = "Missing job id." });
+
+    await using var db = await factory.CreateDbContextAsync();
+    if (!await db.Jobs.AnyAsync(j => j.Id == id))
+        return Results.NotFound(new { error = "Unknown job id. Send the job to the site first." });
+
+    var detail = await db.JobDetails.FindAsync(id);
+    if (detail is null)
+    {
+        detail = new JobDetail { JobId = id };
+        db.JobDetails.Add(detail);
+    }
+    JobDetailMapper.Apply(detail, dto, DateTime.UtcNow);
+
+    var queued = await db.QueuedJobs.FindAsync(id);
+    if (queued is not null) db.QueuedJobs.Remove(queued);
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new { id, saved = true });
+}).DisableAntiforgery();
+
 app.MapRazorComponents<App>().AddInteractiveServerRenderMode();
 
 app.Run();
