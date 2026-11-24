@@ -15,6 +15,11 @@ public static class JobMapper
         job.Classification = Clean(d.Classification);
         job.SubClass = Clean(d.SubClass);
         job.Listed = Clean(d.Listed);
+        job.ListingStatus = Clean(d.ListingStatus);
+        job.ApplicantStrength = Clean(d.ApplicantStrength);
+        job.Badges = Clean(d.Badges);
+        job.AdType = Clean(d.AdType);
+        job.Section = Clean(d.Section);
         job.Description = Clean(d.Description);
         job.Url = Clean(d.Url);
 

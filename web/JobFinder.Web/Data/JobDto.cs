@@ -11,6 +11,11 @@ public record JobDto(
     string? Classification,
     string? SubClass,
     string? Listed,
+    string? ListingStatus,
+    string? ApplicantStrength,
+    string? Badges,
+    string? AdType,
+    string? Section,
     string? Description,
     string? Url,
     string? ScrapedAt);

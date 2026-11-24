@@ -1,6 +1,7 @@
 const statusEl = document.getElementById("status");
 const COLUMNS = ["id", "title", "company", "location", "salary", "workType",
-                 "classification", "subClass", "listed", "description", "url", "scrapedAt"];
+                 "classification", "subClass", "listed", "listingStatus", "applicantStrength",
+                 "badges", "adType", "section", "description", "url", "scrapedAt"];
 
 async function getSaved() {
   const { jobs = {} } = await chrome.storage.local.get("jobs");
@@ -21,6 +22,11 @@ async function isAutoSend() {
   return autoSend;
 }
 
+async function isStrongOnly() {
+  const { strongOnly = false } = await chrome.storage.local.get("strongOnly");
+  return strongOnly;
+}
+
 async function sendBatch(jobs) {
   let res;
   try {
@@ -36,22 +42,29 @@ async function sendBatch(jobs) {
   return await res.json();
 }
 
-// Sends jobs in batches. Returns { added, updated }.
+// Sends jobs in batches. With "Only send strong applicants" on, other jobs are skipped.
+// Returns { added, updated, skipped }.
 async function sendJobs(jobs) {
+  const toSend = (await isStrongOnly()) ? jobs.filter(job => job.applicantStrength) : jobs;
+  const skipped = jobs.length - toSend.length;
   let added = 0, updated = 0;
-  for (let i = 0; i < jobs.length; i += SEND_BATCH) {
-    const r = await sendBatch(jobs.slice(i, i + SEND_BATCH));
+  for (let i = 0; i < toSend.length; i += SEND_BATCH) {
+    const r = await sendBatch(toSend.slice(i, i + SEND_BATCH));
     added += r.added;
     updated += r.updated;
   }
-  return { added, updated };
+  return { added, updated, skipped };
+}
+
+function sentMessage(r) {
+  const skipped = r.skipped ? ` ${r.skipped} skipped (not strong applicants).` : "";
+  return `Sent to site: ${r.added} new, ${r.updated} updated.${skipped}`;
 }
 
 // Same as sendJobs but never throws; returns a status sentence.
 async function trySend(jobs) {
   try {
-    const r = await sendJobs(jobs);
-    return `Sent to site: ${r.added} new, ${r.updated} updated.`;
+    return sentMessage(await sendJobs(jobs));
   } catch (e) {
     return `Could not send to site: ${e.message}`;
   }
@@ -119,15 +132,20 @@ function waitForLoad(tabId) {
   });
 }
 
-// Cards can render after the page "completes", so poll until some show up or we time out.
+// Cards (and the pager) can render after the page "completes", so poll until they show up or we time out.
+// Returns { jobs, pager }. pager is undefined if the page still runs an old content script.
 async function scrapeWhenReady(tab) {
   const deadline = Date.now() + CARD_WAIT_MS;
+  let last = { jobs: [], pager: null };
   while (true) {
     try {
       const res = await requestJobs(tab);
-      if (res?.jobs?.length) return res.jobs;
+      if (res) {
+        last = { jobs: res.jobs || [], pager: res.pager };
+        if (last.jobs.length && (res.pager === undefined || res.pager.pagerFound)) return last;
+      }
     } catch (e) { /* content script not ready yet */ }
-    if (Date.now() > deadline) return [];
+    if (Date.now() > deadline) return last;
     await sleep(500);
   }
 }
@@ -164,7 +182,7 @@ document.getElementById("scrapeAll").addEventListener("click", async () => {
   let totalFound = 0, totalAdded = 0, pagesDone = 0, reason = "";
   let workTab = null;
   const autoSend = await isAutoSend();
-  let siteAdded = 0, siteUpdated = 0, sendError = "";
+  let siteAdded = 0, siteUpdated = 0, siteSkipped = 0, sendError = "";
 
   try {
     for (let i = 0; i < MAX_PAGES; i++) {
@@ -172,11 +190,11 @@ document.getElementById("scrapeAll").addEventListener("click", async () => {
       const pageNum = startPage + i;
       statusEl.textContent = `Scraping page ${pageNum} (${i + 1}/${MAX_PAGES})... ${totalFound} jobs found so far.`;
 
-      let tab, found;
+      let tab, found, pager;
       if (i === 0) {
         // Current page: scrape in place, no reload.
         tab = activeTab;
-        found = await scrapeWhenReady(tab);
+        ({ jobs: found, pager } = await scrapeWhenReady(tab));
       } else {
         // Later pages: load in a background tab so your current page isn't disturbed.
         const url = withPage(activeTab.url, pageNum);
@@ -190,10 +208,19 @@ document.getElementById("scrapeAll").addEventListener("click", async () => {
 
         // SEEK may redirect a too-high page number back to a valid one.
         if (pageOf(tab.url) < pageNum) { reason = `Page ${pageNum} doesn't exist (redirected).`; break; }
-        found = await scrapeWhenReady(tab);
+        ({ jobs: found, pager } = await scrapeWhenReady(tab));
       }
 
+      // The tab was opened before the extension was updated, so it can't report pagination yet.
+      if (pager === undefined) { reason = "The extension was updated. Refresh this SEEK tab and try again."; break; }
+
       if (!found.length) { reason = `Page ${pageNum} has no jobs, so that was the last page.`; break; }
+
+      // Belt and braces for later pages: it must be a real results page, and the page SEEK says it is.
+      if (i > 0) {
+        if (!pager?.pagerFound) { reason = `Page ${pageNum} has no page navigation, so it isn't a real results page.`; break; }
+        if (pager.current !== null && pager.current !== pageNum) { reason = `Page ${pageNum} doesn't exist (SEEK showed page ${pager.current}).`; break; }
+      }
 
       const fresh = found.filter(j => !seenIds.has(j.id));
       if (!fresh.length) { reason = `Page ${pageNum} repeated earlier results, so that was the last page.`; break; }
@@ -206,6 +233,7 @@ document.getElementById("scrapeAll").addEventListener("click", async () => {
           const r = await sendJobs(found);
           siteAdded += r.added;
           siteUpdated += r.updated;
+          siteSkipped += r.skipped;
         } catch (e) {
           sendError = e.message;   // keep scraping; jobs are still saved locally
         }
@@ -213,6 +241,11 @@ document.getElementById("scrapeAll").addEventListener("click", async () => {
       totalFound += found.length;
       totalAdded += added;
       pagesDone++;
+
+      // SEEK's own signals that the real results are over.
+      if (!pager?.pagerFound) { reason = "That was the only page of results."; break; }
+      if (!pager.hasNext) { reason = `Page ${pageNum} is the last page.`; break; }
+      if (pager.total && seenIds.size >= pager.total) { reason = `Collected all ${pager.total} jobs.`; break; }
 
       if (i === MAX_PAGES - 1) { reason = `Reached the ${MAX_PAGES}-page limit.`; break; }
       await sleep(PAGE_DELAY_MS);
@@ -229,7 +262,7 @@ document.getElementById("scrapeAll").addEventListener("click", async () => {
   if (autoSend) {
     siteMsg = sendError
       ? ` Could not send to site: ${sendError}. Use Send to site to retry.`
-      : ` Sent to site: ${siteAdded} new, ${siteUpdated} updated.`;
+      : " " + sentMessage({ added: siteAdded, updated: siteUpdated, skipped: siteSkipped });
   }
   statusEl.textContent = `${reason} Scraped ${pagesDone} page(s), ${totalFound} jobs found, ${totalAdded} new. Total saved: ${Object.keys(saved).length}.${siteMsg}`;
 });
@@ -243,6 +276,10 @@ document.getElementById("sendAll").addEventListener("click", async () => {
   statusEl.textContent = await trySend(jobs);
   setBusy(false);
 });
+
+const strongOnlyEl = document.getElementById("strongOnly");
+isStrongOnly().then(v => { strongOnlyEl.checked = v; });
+strongOnlyEl.addEventListener("change", () => chrome.storage.local.set({ strongOnly: strongOnlyEl.checked }));
 
 const autoSendEl = document.getElementById("autoSend");
 isAutoSend().then(v => { autoSendEl.checked = v; });

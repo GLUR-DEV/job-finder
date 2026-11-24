@@ -23,6 +23,21 @@ public class Job
     /// <summary>Approximate listing date worked out from <see cref="Listed"/> and <see cref="ScrapedAt"/>. Null when the text could not be understood.</summary>
     public DateTime? ListedDate { get; set; }
 
+    /// <summary>"Strong applicant", "Very strong applicant", or empty. See <see cref="ApplicantStrengths"/>.</summary>
+    public string ApplicantStrength { get; set; } = "";
+
+    /// <summary>Every badge shown on the card, separated by "; " (for example "Strong applicant; New to you").</summary>
+    public string Badges { get; set; } = "";
+
+    /// <summary>Extra listing info shown next to the date, such as "Viewed" or "Expiring".</summary>
+    public string ListingStatus { get; set; } = "";
+
+    /// <summary>SEEK's ad type for the card (for example ORGANIC).</summary>
+    public string AdType { get; set; } = "";
+
+    /// <summary>SEEK's results section for the card (for example MAIN).</summary>
+    public string Section { get; set; } = "";
+
     public string Description { get; set; } = "";
     public string Url { get; set; } = "";
 
