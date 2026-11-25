@@ -3,14 +3,24 @@ const COLUMNS = ["id", "title", "company", "location", "salary", "workType",
                  "classification", "subClass", "listed", "listingStatus", "applicantStrength",
                  "badges", "adType", "section", "description", "url", "scrapedAt"];
 
-async function getSaved() {
-  const { jobs = {} } = await chrome.storage.local.get("jobs");
-  return jobs;
+// Trade Me jobs are saved apart from SEEK jobs (own storage key) and have their own CSV columns.
+// Columns for the Trade Me CSV: everything the card gives us, plus the parts of the listing URL.
+const TM_COLUMNS = ["id", "title", "company", "isPromoted", "listed", "listedAt", "location",
+                    "category", "subCategory", "subSubCategory", "region", "district", "workType", "tags",
+                    "pay", "payInText", "description", "bulletPoints", "quickApply",
+                    "urlPath", "url", "imageUrl", "logoUrl", "scrapedAt"];
+const SEEK_KEY = "jobs";
+const TM_KEY = "tmJobs";
+
+async function getSaved(key = SEEK_KEY) {
+  const stored = await chrome.storage.local.get(key);
+  return stored[key] || {};
 }
 
 async function updateCount() {
-  const jobs = await getSaved();
-  statusEl.textContent = `${Object.keys(jobs).length} jobs saved.`;
+  const seek = await getSaved(SEEK_KEY);
+  const tm = await getSaved(TM_KEY);
+  statusEl.textContent = `${Object.keys(seek).length} SEEK jobs saved, ${Object.keys(tm).length} Trade Me jobs saved.`;
 }
 
 // ---- Send to the Blazor site ----
@@ -41,10 +51,11 @@ async function sendBatch(jobs) {
   return await res.json();
 }
 
-// Sends jobs in batches. With "Only send strong applicants" on, other jobs are skipped.
+// Sends jobs in batches. With "Only send strong applicants" on, SEEK jobs without a strong badge are skipped.
+// Trade Me jobs have no applicant strength, so that option never holds them back.
 // Returns { added, updated, skipped }.
 async function sendJobs(jobs) {
-  const toSend = (await isStrongOnly()) ? jobs.filter(job => job.applicantStrength) : jobs;
+  const toSend = (await isStrongOnly()) ? jobs.filter(job => job.source === "trademe" || job.applicantStrength) : jobs;
   const skipped = jobs.length - toSend.length;
   let added = 0, updated = 0;
   for (let i = 0; i < toSend.length; i += SEND_BATCH) {
@@ -56,7 +67,7 @@ async function sendJobs(jobs) {
 }
 
 function sentMessage(r) {
-  const skipped = r.skipped ? ` ${r.skipped} skipped (not strong applicants).` : "";
+  const skipped = r.skipped ? ` ${r.skipped} skipped (SEEK jobs that aren't strong applicants).` : "";
   return `Sent to site: ${r.added} new, ${r.updated} updated.${skipped}`;
 }
 
@@ -71,7 +82,8 @@ async function trySend(jobs) {
 
 document.getElementById("scrape").addEventListener("click", async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  reportSearchUrl(tab?.url);   // lets the site's automatic watch know which search to rescan
+  const isTM = TRADEME_URL.test(tab?.url || "");
+  reportSearchUrl(tab?.url);   // lets the site's automatic watch know which search to rescan (SEEK only)
   try {
     const res = await requestJobs(tab);
     const found = res?.jobs || [];
@@ -79,14 +91,8 @@ document.getElementById("scrape").addEventListener("click", async () => {
       statusEl.textContent = "Reached the page, but no job cards matched. The selectors in content.js may need updating.";
       return;
     }
-    const saved = await getSaved();
-    let added = 0;
-    for (const job of found) {
-      if (!saved[job.id]) added++;
-      saved[job.id] = job;
-    }
-    await chrome.storage.local.set({ jobs: saved });
-    let msg = `Found ${found.length}, ${added} new. Total saved: ${Object.keys(saved).length}.`;
+    const { added, total } = await saveJobs(found, isTM ? TM_KEY : SEEK_KEY);
+    let msg = `Found ${found.length}, ${added} new. Total saved: ${total}${isTM ? " (Trade Me)" : ""}.`;
     if (await isAutoSend()) msg += " " + await trySend(found);
     statusEl.textContent = msg;
   } catch (e) {
@@ -97,19 +103,19 @@ document.getElementById("scrape").addEventListener("click", async () => {
 // ---- Scrape all pages ----
 let stopRequested = false;
 
-async function saveJobs(found) {
-  const saved = await getSaved();
+async function saveJobs(found, key = SEEK_KEY) {
+  const saved = await getSaved(key);
   let added = 0;
   for (const job of found) {
     if (!saved[job.id]) added++;
     saved[job.id] = job;
   }
-  await chrome.storage.local.set({ jobs: saved });
+  await chrome.storage.local.set({ [key]: saved });
   return { added, total: Object.keys(saved).length };
 }
 
 function setBusy(busy) {
-  for (const id of ["scrape", "scrapeAll", "sendAll", "scrapeQueue", "download", "clear"]) document.getElementById(id).disabled = busy;
+  for (const id of ["scrape", "scrapeAll", "sendAll", "scrapeQueue", "download", "downloadSeek", "downloadTm", "clear"]) document.getElementById(id).disabled = busy;
   document.getElementById("stop").hidden = !busy;
 }
 
@@ -117,14 +123,16 @@ document.getElementById("stop").addEventListener("click", () => { stopRequested 
 
 document.getElementById("scrapeAll").addEventListener("click", async () => {
   const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!activeTab?.url || !/^https:\/\/([^/]+\.)?seek\.(com(\.au)?|co\.nz)\//.test(activeTab.url)) {
-    statusEl.textContent = "Open a SEEK search results page first.";
+  const isTM = TRADEME_URL.test(activeTab?.url || "");
+  if (!activeTab?.url || !(SEEK_URL.test(activeTab.url) || isTM)) {
+    statusEl.textContent = "Open a SEEK or Trade Me search results page first.";
     return;
   }
 
-  reportSearchUrl(activeTab.url);   // lets the site's automatic watch know which search to rescan
+  reportSearchUrl(activeTab.url);   // lets the site's automatic watch know which search to rescan (SEEK only)
   stopRequested = false;
   setBusy(true);
+  const key = isTM ? TM_KEY : SEEK_KEY;
   const startPage = pageOf(activeTab.url);
   const seenIds = new Set();
   let totalFound = 0, totalAdded = 0, pagesDone = 0, reason = "";
@@ -174,7 +182,7 @@ document.getElementById("scrapeAll").addEventListener("click", async () => {
       if (!fresh.length) { reason = `Page ${pageNum} repeated earlier results, so that was the last page.`; break; }
       fresh.forEach(j => seenIds.add(j.id));
 
-      const { added } = await saveJobs(found);   // saved per page, so nothing is lost if the popup closes
+      const { added } = await saveJobs(found, key);   // saved per page, so nothing is lost if the popup closes
 
       if (autoSend && !sendError) {
         try {
@@ -205,7 +213,7 @@ document.getElementById("scrapeAll").addEventListener("click", async () => {
     setBusy(false);
   }
 
-  const saved = await getSaved();
+  const saved = await getSaved(key);
   let siteMsg = "";
   if (autoSend) {
     siteMsg = sendError
@@ -215,8 +223,9 @@ document.getElementById("scrapeAll").addEventListener("click", async () => {
   statusEl.textContent = `${reason} Scraped ${pagesDone} page(s), ${totalFound} jobs found, ${totalAdded} new. Total saved: ${Object.keys(saved).length}.${siteMsg}`;
 });
 
+// Sends everything saved, SEEK and Trade Me together.
 document.getElementById("sendAll").addEventListener("click", async () => {
-  const jobs = Object.values(await getSaved());
+  const jobs = [...Object.values(await getSaved(SEEK_KEY)), ...Object.values(await getSaved(TM_KEY))];
   if (!jobs.length) { statusEl.textContent = "Nothing to send yet."; return; }
   setBusy(true);
   document.getElementById("stop").hidden = true;
@@ -341,25 +350,42 @@ function csvCell(value) {
   return `"${String(value ?? "").replace(/"/g, '""')}"`;
 }
 
-document.getElementById("download").addEventListener("click", async () => {
-  const jobs = Object.values(await getSaved());
-  if (!jobs.length) { statusEl.textContent = "Nothing to download yet."; return; }
+// "Download CSV" asks which site's jobs to export. The two choices show the saved counts.
+const downloadChoiceEl = document.getElementById("downloadChoice");
 
-  const rows = [COLUMNS.map(csvCell).join(",")];
-  jobs.forEach(j => rows.push(COLUMNS.map(c => csvCell(j[c])).join(",")));
+document.getElementById("download").addEventListener("click", async () => {
+  if (!downloadChoiceEl.hidden) { downloadChoiceEl.hidden = true; return; }
+  const seekCount = Object.keys(await getSaved(SEEK_KEY)).length;
+  const tmCount = Object.keys(await getSaved(TM_KEY)).length;
+  document.getElementById("downloadSeek").textContent = `SEEK CSV (${seekCount})`;
+  document.getElementById("downloadTm").textContent = `Trade Me CSV (${tmCount})`;
+  downloadChoiceEl.hidden = false;
+  statusEl.textContent = "Which jobs do you want to download?";
+});
+
+async function downloadCsv(key, columns, filePrefix, label) {
+  downloadChoiceEl.hidden = true;
+  const jobs = Object.values(await getSaved(key));
+  if (!jobs.length) { statusEl.textContent = `No ${label} jobs saved yet.`; return; }
+
+  const rows = [columns.map(csvCell).join(",")];
+  jobs.forEach(j => rows.push(columns.map(c => csvCell(j[c])).join(",")));
 
   // BOM so Excel reads UTF-8 correctly
   const blob = new Blob(["\ufeff" + rows.join("\r\n")], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = `seek-jobs-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.download = `${filePrefix}-${new Date().toISOString().slice(0, 10)}.csv`;
   a.click();
   URL.revokeObjectURL(a.href);
-  statusEl.textContent = `Downloaded ${jobs.length} jobs.`;
-});
+  statusEl.textContent = `Downloaded ${jobs.length} ${label} jobs.`;
+}
+
+document.getElementById("downloadSeek").addEventListener("click", () => downloadCsv(SEEK_KEY, COLUMNS, "seek-jobs", "SEEK"));
+document.getElementById("downloadTm").addEventListener("click", () => downloadCsv(TM_KEY, TM_COLUMNS, "trademe-jobs", "Trade Me"));
 
 document.getElementById("clear").addEventListener("click", async () => {
-  await chrome.storage.local.remove("jobs");
+  await chrome.storage.local.remove([SEEK_KEY, TM_KEY]);
   updateCount();
 });
 

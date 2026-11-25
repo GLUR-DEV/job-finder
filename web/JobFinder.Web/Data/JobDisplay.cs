@@ -8,28 +8,62 @@ public static class JobDisplay
 {
     public static string Utc(DateTime d) => d.ToString("yyyy-MM-dd HH:mm") + " UTC";
 
-    /// <summary>Every field scraped from the search results card.</summary>
-    public static IEnumerable<Row> JobRows(Job j) => new[]
+    /// <summary>Every field scraped from the search results card. SEEK and Trade Me jobs each show their own fields.</summary>
+    public static IEnumerable<Row> JobRows(Job j)
     {
-        new Row("Job ID", j.Id),
-        new Row("Company", j.Company),
-        new Row("Location", j.Location),
-        new Row("Salary", j.Salary),
-        new Row("Work type", j.WorkType),
-        new Row("Classification", j.Classification),
-        new Row("Sub-classification", j.SubClass),
-        new Row("Applicant strength", j.ApplicantStrength),
-        new Row("Badges", j.Badges),
-        new Row("Listed (as shown on SEEK)", j.Listed),
-        new Row("Listed (approximate date)", j.ListedDate is { } d ? d.ToString("yyyy-MM-dd") : ""),
-        new Row("Listing status", j.ListingStatus),
-        new Row("Ad type", j.AdType),
-        new Row("Section", j.Section),
-        new Row("Description", j.Description, Multiline: true),
-        new Row("Job URL", j.Url, Link: true),
-        new Row("Scraped", Utc(j.ScrapedAt)),
-        new Row("Received by this site", Utc(j.ReceivedAt)),
-    };
+        var tradeMe = j.Source == JobSources.TradeMe;
+        var site = JobSources.Label(j.Source);
+
+        var rows = new List<Row>
+        {
+            new("Site", site),
+            new("Job ID", j.Id),
+            new("Company", j.Company),
+            new("Location", j.Location),
+            new("Salary", j.Salary),
+            new("Work type", j.WorkType),
+            new("Classification", j.Classification),
+            new("Sub-classification", j.SubClass),
+        };
+
+        if (tradeMe)
+        {
+            rows.Add(new("Trade Me category", j.SourceCategory));
+            rows.Add(new("Region", j.Region));
+            rows.Add(new("District", j.District));
+            rows.Add(new("Tags", j.Tags));
+            rows.Add(new("Promoted listing", j.IsPromoted ? "Yes" : "No"));
+            rows.Add(new("Quick apply", j.QuickApply ? "Yes" : "No"));
+        }
+        else
+        {
+            rows.Add(new("Applicant strength", j.ApplicantStrength));
+            rows.Add(new("Badges", j.Badges));
+        }
+
+        rows.Add(new($"Listed (as shown on {site})", j.Listed));
+        rows.Add(new(tradeMe ? "Listed (date)" : "Listed (approximate date)", j.ListedDate is { } d ? d.ToString("yyyy-MM-dd") : ""));
+
+        if (!tradeMe)
+        {
+            rows.Add(new("Listing status", j.ListingStatus));
+            rows.Add(new("Ad type", j.AdType));
+            rows.Add(new("Section", j.Section));
+        }
+
+        rows.Add(new("Description", j.Description, Multiline: true));
+        if (tradeMe)
+        {
+            rows.Add(new("Bullet points", j.BulletPoints, Multiline: true));
+            rows.Add(new("Photo", j.ImageUrl, Link: true));
+            rows.Add(new("Advertiser logo", j.LogoUrl, Link: true));
+        }
+
+        rows.Add(new("Job URL", j.Url, Link: true));
+        rows.Add(new("Scraped", Utc(j.ScrapedAt)));
+        rows.Add(new("Received by this site", Utc(j.ReceivedAt)));
+        return rows;
+    }
 
     /// <summary>Every field scraped from the job's own page.</summary>
     public static IEnumerable<Row> DetailRows(JobDetail d) => new[]

@@ -1,15 +1,28 @@
-<article class="card" role="button" tabindex="0" @onclick="() => OnSelected.InvokeAsync(Item)" @onkeydown="OnKey">
+<article class="@CardClass" role="button" tabindex="0" @onclick="() => OnSelected.InvokeAsync(Item)" @onkeydown="OnKey">
     <h2>@Item.Title</h2>
     @if (Item.Company != "") { <p class="company">@Item.Company</p> }
     @if (Item.Location != "") { <p class="location">@Item.Location</p> }
 
     <div class="tags">
+        @if (IsTradeMe)
+        {
+            <span class="tag tag-source">Trade Me</span>
+            @if (Item.IsPromoted) { <span class="tag">Promoted</span> }
+        }
         @if (Item.ApplicantStrength != "")
         {
             <span class="tag @(Item.ApplicantStrength == ApplicantStrengths.VeryStrong ? "tag-very" : "tag-strong")">@Item.ApplicantStrength</span>
         }
         @if (Item.WorkType != "") { <span class="tag">@Item.WorkType</span> }
         @if (Item.Salary != "") { <span class="tag tag-salary">@Item.Salary</span> }
+        @if (IsTradeMe)
+        {
+            @foreach (var t in Item.Tags.Split("; ", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                <span class="tag">@t</span>
+            }
+            @if (Item.QuickApply) { <span class="tag">Quick apply</span> }
+        }
         @if (ExtraTags is not null)
         {
             @foreach (var pill in ExtraTags)
@@ -24,6 +37,7 @@
         <p class="classification">@Item.Classification@(Item.SubClass != "" ? " > " + Item.SubClass : "")</p>
     }
     @if (Item.Description != "") { <p class="summary">@Item.Description</p> }
+    @if (Item.BulletPoints != "") { <p class="summary">@Item.BulletPoints</p> }
     @if (Item.Listed != "") { <p class="listed">@Item.Listed</p> }
     @if (Note is not null) { <p class="note-line">@Note</p> }
 </article>
@@ -37,6 +51,10 @@
 
     /// <summary>Optional small line at the bottom of the card.</summary>
     [Parameter] public string? Note { get; set; }
+
+    private bool IsTradeMe => Item.Source == JobSources.TradeMe;
+
+    private string CardClass => IsTradeMe ? "card card-trademe" : "card";
 
     private async Task OnKey(KeyboardEventArgs e)
     {

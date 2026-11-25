@@ -12,6 +12,7 @@ public class JobDbContext(DbContextOptions<JobDbContext> options) : DbContext(op
     {
         modelBuilder.Entity<Job>(e =>
         {
+            e.HasIndex(j => j.Source);
             e.HasIndex(j => j.ListedDate);
             e.HasIndex(j => j.Location);
             e.HasIndex(j => j.WorkType);

@@ -12,8 +12,16 @@ public class JobFilter
     private static readonly string[] ApplicantChoices = { "", "strong", "very", "both" };
     private static readonly string[] ContactChoices = { "", "phone", "email", "both", "none" };
     private static readonly string[] HoursChoices = { "", "yes", "no" };
+    private static readonly string[] SourceChoices = { "", JobSources.Seek, JobSources.TradeMe };
 
     public string Keyword { get; set; } = "";
+
+    /// <summary>"" (any site), "seek" or "trademe". See <see cref="JobSources"/>.</summary>
+    public string Source { get; set; } = "";
+
+    /// <summary>Trade Me jobs have no applicant strength, so the Applicant filter doesn't apply when only Trade Me is shown.</summary>
+    public bool ApplicantApplies => Source != JobSources.TradeMe;
+
     public string Location { get; set; } = "";
     public string WorkType { get; set; } = "";
     public string Classification { get; set; } = "";
@@ -30,7 +38,7 @@ public class JobFilter
     public string Hours { get; set; } = "";
 
     public bool HasJobFilters =>
-        Keyword.Trim() != "" || Location != "" || WorkType != "" || Classification != "" ||
+        Keyword.Trim() != "" || Source != "" || Location != "" || WorkType != "" || Classification != "" ||
         SubClass != "" || ListedDays != 0 || Applicant != "";
 
     public bool HasFavouriteFilters => Contact != "" || Hours != "";
@@ -39,21 +47,23 @@ public class JobFilter
 
     public void Clear()
     {
-        Keyword = Location = WorkType = Classification = SubClass = Applicant = Contact = Hours = "";
+        Keyword = Source = Location = WorkType = Classification = SubClass = Applicant = Contact = Hours = "";
         ListedDays = 0;
     }
 
     /// <summary>Fills the filter from query string values, ignoring anything it doesn't recognise.</summary>
     public void Load(string? keyword, string? location, string? workType, string? classification,
-                     string? subClass, int? listed, string? applicant, string? contact, string? hours)
+                     string? subClass, int? listed, string? applicant, string? contact, string? hours,
+                     string? source = null)
     {
         Keyword = keyword?.Trim() ?? "";
+        Source = source is not null && SourceChoices.Contains(source) ? source : "";
         Location = location ?? "";
         WorkType = workType ?? "";
         Classification = classification ?? "";
         SubClass = subClass ?? "";
         ListedDays = listed is { } l && ListedChoices.Contains(l) ? l : 0;
-        Applicant = applicant is not null && ApplicantChoices.Contains(applicant) ? applicant : "";
+        Applicant = ApplicantApplies && applicant is not null && ApplicantChoices.Contains(applicant) ? applicant : "";
         Contact = contact is not null && ContactChoices.Contains(contact) ? contact : "";
         Hours = hours is not null && HoursChoices.Contains(hours) ? hours : "";
     }
@@ -72,6 +82,7 @@ public class JobFilter
         }
 
         Add("keyword", Keyword.Trim());
+        Add("source", Source);
         Add("location", location ?? Location);
         Add("workType", WorkType);
         Add("classification", Classification);

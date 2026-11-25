@@ -21,6 +21,7 @@ public abstract class FilteredPageBase : ComponentBase
     [Parameter, SupplyParameterFromQuery(Name = "applicant")] public string? QueryApplicant { get; set; }
     [Parameter, SupplyParameterFromQuery(Name = "contact")] public string? QueryContact { get; set; }
     [Parameter, SupplyParameterFromQuery(Name = "hours")] public string? QueryHours { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "source")] public string? QuerySource { get; set; }
 
     /// <summary>The filters currently applied on the page.</summary>
     protected JobFilter Filter { get; } = new();
@@ -32,12 +33,12 @@ public abstract class FilteredPageBase : ComponentBase
     protected bool ApplyQuery()
     {
         var signature = string.Join("|", QueryKeyword, QueryLocation, QueryWorkType, QueryClassification,
-            QuerySubClass, QueryListed, QueryApplicant, QueryContact, QueryHours);
+            QuerySubClass, QueryListed, QueryApplicant, QueryContact, QueryHours, QuerySource);
         if (signature == lastQuery) return false;
 
         lastQuery = signature;
         Filter.Load(QueryKeyword, QueryLocation, QueryWorkType, QueryClassification, QuerySubClass,
-                    QueryListed, QueryApplicant, QueryContact, QueryHours);
+                    QueryListed, QueryApplicant, QueryContact, QueryHours, QuerySource);
         return true;
     }
 }

@@ -2,6 +2,7 @@
 
 const API_BASE = "http://localhost:5000";
 const SEEK_URL = /^https:\/\/([^/]+\.)?seek\.(com(\.au)?|co\.nz)\//;
+const TRADEME_URL = /^https:\/\/([^/]+\.)?trademe\.co\.nz\//;
 
 const MAX_PAGES = 25;
 const PAGE_DELAY_MS = 1000;      // pause between pages to be polite to SEEK

@@ -106,7 +106,7 @@ function scrapeJobs() {
     const idMatch = url.match(/\/job\/(\d+)/);
     const id = card.getAttribute("data-job-id") || (idMatch ? idMatch[1] : url);
 
-    const job = { id, url };
+    const job = { source: "seek", id, url };
     for (const [key, selectors] of Object.entries(FIELDS)) {
       job[key] = firstText(card, selectors);
     }
@@ -274,11 +274,148 @@ function readPager() {
   return pager;
 }
 
+// ---- Trade Me search pages ----
+// Trade Me is an Angular app: cards are custom elements and the data hooks are tmid="..." attributes.
+// Normal cards are <tm-jobs-search-card>; promoted (paid) cards are <tm-promoted-listing-card> with different
+// markup, so each kind has its own reader. If a field comes back empty, inspect the page and update the selectors.
+const IS_TRADEME = /(^|\.)trademe\.co\.nz$/.test(location.hostname);
+
+function tmText(root, selector) {
+  const el = root.querySelector(selector);
+  return el ? clean(el.textContent) : "";
+}
+
+// Listing URLs look like /a/jobs/<category>/<sub-category>[/<sub-sub-category>]/<region>/<district>/<work-type>/listing/<id>.
+// The category tree is 1 to 3 levels deep (for example "other/...", "healthcare/dentistry/...",
+// "healthcare/nursing-midwifery/surgical/..."), but the last three parts are always region, district and work type,
+// so the parts are read from the end. The raw path is kept as well for checking.
+function tmUrlParts(path) {
+  const segs = path.split("/").filter(Boolean);
+  const start = segs.indexOf("jobs");
+  const end = segs.indexOf("listing");
+  const parts = start >= 0 && end > start ? segs.slice(start + 1, end) : [];
+  const out = { category: "", subCategory: "", subSubCategory: "", region: "", district: "", workType: "", urlPath: parts.join("/") };
+  if (parts.length >= 4) {
+    out.workType = parts[parts.length - 1];
+    out.district = parts[parts.length - 2];
+    out.region = parts[parts.length - 3];
+    [out.category = "", out.subCategory = "", out.subSubCategory = ""] = parts.slice(0, -3);
+  }
+  return out;
+}
+
+// First pay-looking figure in free text, e.g. "$40-$45/hr" or "$25 per hour" or "$80k".
+const TM_PAY_PATTERN = /\$\s?\d[\d,]*(?:\.\d+)?\s?k?(?:\s?(?:-|–|to)\s?\$?\s?\d[\d,]*(?:\.\d+)?\s?k?)?(?:\s?(?:\/|per\s|p\.?\s?)\s?(?:hr|hour|h|annum|a|year|yr|week|wk|day))?/i;
+
+function tmPayIn(text) {
+  const m = (text || "").match(TM_PAY_PATTERN);
+  return m ? clean(m[0]) : "";
+}
+
+function tmCardLink(card) {
+  return card.querySelector('a[href*="/listing/"]');
+}
+
+function tmCommon(card, isPromoted) {
+  const link = tmCardLink(card);
+  const href = link ? link.href : "";
+  const url = href.split("?")[0];
+  const idMatch = url.match(/\/listing\/(\d+)/);
+  const path = url ? new URL(url).pathname : "";
+
+  const timeEl = card.querySelector('time[tmid="startDate"], time');
+  const job = {
+    source: "trademe",
+    id: idMatch ? idMatch[1] : url,
+    url,
+    isPromoted,
+    listed: timeEl ? clean(timeEl.textContent) : "",
+    listedAt: timeEl ? (timeEl.getAttribute("datetime") || "") : "",
+    location: tmText(card, '[tmid="location"]'),
+    quickApply: !!card.querySelector("tm-jobs-quick-apply"),
+    ...tmUrlParts(path)
+  };
+  return job;
+}
+
+// Work-type tags such as "Part-time, Contract". The Quick apply tag shares the same item class, so it is skipped.
+function tmTagsOf(card) {
+  return [...card.querySelectorAll(".tm-job-listing-attribute-tags__item")]
+    .filter(el => !el.matches("tm-jobs-quick-apply") && !el.querySelector(".tm-promoted-listing-info__quickApply-tag"))
+    .map(el => clean(el.textContent))
+    .filter(Boolean)
+    .join("; ");
+}
+
+function tmScrapeNormal(card) {
+  const job = tmCommon(card, false);
+  job.title = tmText(card, '[tmid="title"]');
+  job.company = tmText(card, '[tmid="company"]');
+  job.description = tmText(card, '[tmid="subtitle"]');
+  job.bulletPoints = "";
+  job.pay = tmText(card, '[tmid="approximatePayRange"]');
+  job.tags = tmTagsOf(card);
+  job.imageUrl = "";
+  job.logoUrl = "";
+  return job;
+}
+
+function tmScrapePromoted(card) {
+  const job = tmCommon(card, true);
+  job.title = tmText(card, ".tm-promoted-listing-info__title");
+  job.company = "";   // promoted cards show the advertiser's logo instead of a name
+  job.description = tmText(card, ".tm-promoted-listing-info__short-description");
+  job.bulletPoints = [...card.querySelectorAll(".tm-promoted-listing-info__bullet-point")]
+    .map(li => clean(li.textContent)).filter(Boolean).join(" | ");
+  job.pay = tmText(card, '[tmid="approximatePayRange"]');
+  job.tags = tmTagsOf(card);
+  const photo = card.querySelector("img.tm-promoted-listing-card__listing-photo");
+  const logo = card.querySelector(".tm-promoted-listing-card__media-container img");
+  job.imageUrl = photo ? photo.src : "";
+  job.logoUrl = logo ? logo.src : "";
+  return job;
+}
+
+function scrapeTradeMeJobs() {
+  const now = new Date().toISOString();
+  const jobs = [];
+  const seen = new Set();
+
+  const add = job => {
+    if (!job.title || seen.has(job.id)) return;
+    seen.add(job.id);
+    // Trade Me often has no pay field, so also pull a figure out of the teaser text and bullets.
+    job.payInText = tmPayIn([job.description, job.bulletPoints].filter(Boolean).join(" | "));
+    job.scrapedAt = now;
+    jobs.push(job);
+  };
+
+  // Promoted cards first: Trade Me also lists them again in the normal results, and the first copy wins.
+  document.querySelectorAll("tm-promoted-listing-card").forEach(card => add(tmScrapePromoted(card)));
+  document.querySelectorAll("tm-jobs-search-card").forEach(card => add(tmScrapeNormal(card)));
+  return jobs;
+}
+
+// Page 1 has no ?page= in its link, and the Next link is only there when another page exists.
+function readTradeMePager() {
+  const nav = document.querySelector('nav[aria-label="Pagination"]');
+  const pager = { pagerFound: !!nav, hasNext: false, current: null, total: null };
+  if (nav) {
+    pager.hasNext = !!nav.querySelector('a[aria-label^="Next page"]');
+    const cur = nav.querySelector('a[aria-current="page"]');
+    const n = cur ? parseInt(cur.textContent, 10) : NaN;
+    pager.current = Number.isFinite(n) ? n : null;
+  }
+  return pager;
+}
+
 if (!window.__seekScraperLoaded) {
   window.__seekScraperLoaded = true;
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg && msg.type === "SCRAPE") {
-      sendResponse({ jobs: scrapeJobs(), pager: readPager() });
+      sendResponse(IS_TRADEME
+        ? { jobs: scrapeTradeMeJobs(), pager: readTradeMePager() }
+        : { jobs: scrapeJobs(), pager: readPager() });
     } else if (msg && msg.type === "SCRAPE_DETAIL") {
       sendResponse({ detail: scrapeJobDetail() });
     }

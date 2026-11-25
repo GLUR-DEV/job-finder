@@ -8,10 +8,22 @@
   --accent-ink: #ffffff;
   --accent-soft: #dff0ee;
   --focus: #1456d9;
+
+  /* Trade Me jobs: a warm yellow, so they stand apart from SEEK's teal */
+  --tm-bg: #fffae6;
+  --tm-line: #ecd68a;
+  --tm-accent: #f5b800;
+  --tm-soft: #fbe8a0;
+  --tm-ink: #3a2d00;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
+    --tm-bg: #2e2915;
+    --tm-line: #6a5a1c;
+    --tm-accent: #f2c21b;
+    --tm-soft: #4a3f12;
+    --tm-ink: #2b2200;
     --bg: #12191e;
     --surface: #1b252c;
     --ink: #e7eef2;
@@ -130,6 +142,17 @@ input[type="search"], select {
 .tag-strong { font-weight: 600; }
 .tag-very { font-weight: 600; color: var(--accent-ink); background: var(--accent); }
 .tag-salary { background: transparent; border: 1px solid var(--line); }
+
+/* Trade Me cards */
+.card-trademe {
+  background: var(--tm-bg);
+  border-color: var(--tm-line);
+  border-left-color: var(--tm-accent);
+}
+.card-trademe:hover { border-color: var(--tm-accent); }
+.card-trademe .tag { background: var(--tm-soft); }
+.card-trademe .tag-salary { background: transparent; border: 1px solid var(--tm-line); }
+.card-trademe .tag-source { font-weight: 600; color: var(--tm-ink); background: var(--tm-accent); }
 
 /* Pager */
 .pager {

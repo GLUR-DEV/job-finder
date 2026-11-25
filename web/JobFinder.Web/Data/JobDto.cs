@@ -1,6 +1,9 @@
 namespace JobFinder.Web.Data;
 
-/// <summary>Shape of a job as sent by the Chrome extension (camelCase JSON).</summary>
+/// <summary>
+/// Shape of a job as sent by the Chrome extension (camelCase JSON).
+/// The fields after <c>ScrapedAt</c> are optional: SEEK jobs leave them out, Trade Me jobs fill them in.
+/// </summary>
 public record JobDto(
     string? Id,
     string? Title,
@@ -18,4 +21,20 @@ public record JobDto(
     string? Section,
     string? Description,
     string? Url,
-    string? ScrapedAt);
+    string? ScrapedAt,
+    string? Source = null,
+    bool? IsPromoted = null,
+    bool? QuickApply = null,
+    string? ListedAt = null,
+    string? Pay = null,
+    string? PayInText = null,
+    string? Tags = null,
+    string? BulletPoints = null,
+    string? Category = null,
+    string? SubCategory = null,
+    string? SubSubCategory = null,
+    string? Region = null,
+    string? District = null,
+    string? UrlPath = null,
+    string? ImageUrl = null,
+    string? LogoUrl = null);

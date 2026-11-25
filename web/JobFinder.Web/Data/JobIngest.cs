@@ -11,10 +11,12 @@ public static class JobIngest
     /// <summary>Adds new jobs and updates existing ones by id. If the same id appears twice, the last one wins.</summary>
     public static async Task<IngestResult> UpsertAsync(JobDbContext db, IReadOnlyCollection<JobDto> incoming, DateTime nowUtc)
     {
+        // Trade Me ids are stored with a prefix (see JobMapper.KeyOf), so the same id can't clash between sites.
         var valid = incoming
-            .Where(j => !string.IsNullOrWhiteSpace(j.Id))
-            .GroupBy(j => j.Id!.Trim())
-            .Select(g => (Id: g.Key, Dto: g.Last()))
+            .Select(j => (Id: JobMapper.KeyOf(j), Dto: j))
+            .Where(x => x.Id is not null)
+            .GroupBy(x => x.Id!)
+            .Select(g => (Id: g.Key, Dto: g.Last().Dto))
             .ToList();
 
         int added = 0, updated = 0;

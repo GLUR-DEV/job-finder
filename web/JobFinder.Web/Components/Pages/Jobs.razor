@@ -12,6 +12,15 @@
     </label>
 
     <label class="field">
+        <span>Site</span>
+        <select @bind="Filter.Source" @bind:after="OnSourceChangedAsync">
+            <option value="">Any</option>
+            <option value="@JobSources.Seek">SEEK</option>
+            <option value="@JobSources.TradeMe">Trade Me</option>
+        </select>
+    </label>
+
+    <label class="field">
         <span>Location</span>
         <select @bind="Filter.Location" @bind:after="ApplyFiltersAsync">
             <option value="">All locations</option>
@@ -67,15 +76,19 @@
         </select>
     </label>
 
-    <label class="field">
-        <span>Applicant strength</span>
-        <select @bind="Filter.Applicant" @bind:after="ApplyFiltersAsync">
-            <option value="">Any</option>
-            <option value="strong">Strong applicant</option>
-            <option value="very">Very strong applicant</option>
-            <option value="both">Strong or very strong</option>
-        </select>
-    </label>
+    @* Trade Me jobs have no applicant strength, so the filter is hidden while only Trade Me is shown. *@
+    @if (Filter.ApplicantApplies)
+    {
+        <label class="field">
+            <span>Applicant strength</span>
+            <select @bind="Filter.Applicant" @bind:after="ApplyFiltersAsync">
+                <option value="">Any</option>
+                <option value="strong">Strong applicant</option>
+                <option value="very">Very strong applicant</option>
+                <option value="both">Strong or very strong</option>
+            </select>
+        </label>
+    }
 
     <button type="button" class="link-button" @onclick="ClearFiltersAsync" disabled="@(!HasFilters)">Clear filters</button>
 </section>
@@ -114,7 +127,7 @@
         }
         else
         {
-            <p>No jobs yet. Scrape a SEEK page with the extension, then use Send to site (or turn on auto-send).</p>
+            <p>No jobs yet. Scrape a SEEK or Trade Me page with the extension, then use Send to site (or turn on auto-send).</p>
         }
     </div>
 }
@@ -152,7 +165,7 @@
     /// <summary>The most jobs that can be queued for a detail scrape in one go.</summary>
     private const int MaxQueue = 75;
 
-    private int pageNumber = 1, total, queueCount;
+    private int pageNumber = 1, total, queueTotal, queueCount;
     private bool loading = true;
     private string queueMessage = "";
 
@@ -164,12 +177,17 @@
 
     private bool HasFilters => Filter.HasJobFilters;
 
-    private bool CanQueue => !loading && total > 0 && total <= MaxQueue;
+    // Only SEEK jobs can be queued: the extension reads details from SEEK job pages only.
+    private bool CanQueue => !loading && queueTotal > 0 && queueTotal <= MaxQueue;
+
+    private int TradeMeLeftOut => total - queueTotal;
 
     private string QueueNote =>
         total == 0 ? "" :
-        total > MaxQueue ? $"Too many jobs to queue ({total}). Narrow the filters to {MaxQueue} or fewer." :
-        $"Queues the {total} filtered {(total == 1 ? "job" : "jobs")} so the extension can scrape their full details.";
+        queueTotal == 0 ? "Trade Me jobs can't be queued for a details scrape yet." :
+        queueTotal > MaxQueue ? $"Too many SEEK jobs to queue ({queueTotal}). Narrow the filters to {MaxQueue} or fewer." :
+        $"Queues the {queueTotal} filtered SEEK {(queueTotal == 1 ? "job" : "jobs")} so the extension can scrape their full details."
+            + (TradeMeLeftOut > 0 ? $" {TradeMeLeftOut} Trade Me {(TradeMeLeftOut == 1 ? "job is" : "jobs are")} left out." : "");
 
     protected override async Task OnInitializedAsync() => await LoadQueueCountAsync();
 
@@ -190,13 +208,19 @@
     private async Task LoadOptionsAsync()
     {
         await using var db = await DbFactory.CreateDbContextAsync();
-        locations = await DistinctAsync(db.Jobs.Select(j => j.Location));
-        workTypes = await DistinctAsync(db.Jobs.Select(j => j.WorkType));
-        classifications = await DistinctAsync(db.Jobs.Select(j => j.Classification));
+
+        // The lists only offer values the chosen site has. Trade Me categories are merged into SEEK's names
+        // (see TradeMeTaxonomy), so with "Any" a shared category appears once and Trade Me-only ones are added.
+        var src = Filter.Source;
+        var scoped = db.Jobs.Where(j => src == "" || j.Source == src);
+
+        locations = await DistinctAsync(scoped.Select(j => j.Location));
+        workTypes = await DistinctAsync(scoped.Select(j => j.WorkType));
+        classifications = await DistinctAsync(scoped.Select(j => j.Classification));
 
         var cls = Filter.Classification;
         subClasses = await DistinctAsync(
-            db.Jobs.Where(j => cls == "" || j.Classification == cls).Select(j => j.SubClass));
+            scoped.Where(j => cls == "" || j.Classification == cls).Select(j => j.SubClass));
     }
 
     private async Task LoadQueueCountAsync()
@@ -219,6 +243,7 @@
 
         var q = FilteredJobs(db);
         total = await q.CountAsync();
+        queueTotal = await q.CountAsync(j => j.Source == JobSources.Seek);
         if (pageNumber > TotalPages) pageNumber = TotalPages;
 
         jobs = await InDisplayOrder(q)
@@ -234,6 +259,28 @@
         pageNumber = 1;
         queueMessage = "";
         await LoadJobsAsync();
+    }
+
+    private async Task OnSourceChangedAsync()
+    {
+        if (!Filter.ApplicantApplies) Filter.Applicant = "";   // Trade Me jobs have no applicant strength
+
+        await LoadOptionsAsync();
+
+        // Drop any selection the chosen site doesn't have (a SEEK-only classification, say).
+        var dropped = false;
+        if (Filter.Location != "" && !locations.Contains(Filter.Location)) { Filter.Location = ""; dropped = true; }
+        if (Filter.WorkType != "" && !workTypes.Contains(Filter.WorkType)) { Filter.WorkType = ""; dropped = true; }
+        if (Filter.Classification != "" && !classifications.Contains(Filter.Classification))
+        {
+            Filter.Classification = "";
+            Filter.SubClass = "";
+            dropped = true;
+        }
+        if (Filter.SubClass != "" && !subClasses.Contains(Filter.SubClass)) { Filter.SubClass = ""; dropped = true; }
+        if (dropped) await LoadOptionsAsync();
+
+        await ApplyFiltersAsync();
     }
 
     private async Task OnClassificationChangedAsync()
@@ -254,13 +301,16 @@
     private async Task QueueAsync()
     {
         await using var db = await DbFactory.CreateDbContextAsync();
-        var ids = await InDisplayOrder(FilteredJobs(db)).Select(j => j.Id).ToListAsync();
+
+        // SEEK jobs only: the extension can't scrape Trade Me job pages yet.
+        var ids = await InDisplayOrder(FilteredJobs(db).Where(j => j.Source == JobSources.Seek))
+            .Select(j => j.Id).ToListAsync();
 
         if (ids.Count == 0 || ids.Count > MaxQueue)
         {
             queueMessage = ids.Count == 0
-                ? "No jobs to queue."
-                : $"Too many jobs to queue ({ids.Count}). Narrow the filters to {MaxQueue} or fewer.";
+                ? "No SEEK jobs to queue."
+                : $"Too many SEEK jobs to queue ({ids.Count}). Narrow the filters to {MaxQueue} or fewer.";
             return;
         }
 

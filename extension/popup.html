@@ -8,6 +8,7 @@
     #status { font-size: 13px; color: #444; min-height: 36px; }
     .opt { display: block; font-size: 13px; margin-bottom: 8px; }
     .note { font-size: 11px; color: #777; margin: -4px 0 8px; }
+    #downloadChoice { margin-left: 12px; }
   </style>
 </head>
 <body>
@@ -19,8 +20,12 @@
   <button id="scrapeQueue">Scrape queued details</button>
   <div class="note">Scrapes the jobs queued on the site's Jobs page.</div>
   <label class="opt"><input type="checkbox" id="autoSend"> Auto-send after scraping</label>
-  <label class="opt"><input type="checkbox" id="strongOnly"> Only send strong applicants (strong or very strong)</label>
+  <label class="opt"><input type="checkbox" id="strongOnly"> Only send strong applicants (SEEK only; Trade Me jobs are always sent)</label>
   <button id="download">Download CSV</button>
+  <div id="downloadChoice" hidden>
+    <button id="downloadSeek">SEEK CSV</button>
+    <button id="downloadTm">Trade Me CSV</button>
+  </div>
   <button id="clear">Clear saved jobs</button>
   <div id="status"></div>
   <script src="common.js"></script>
