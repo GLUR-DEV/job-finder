@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
   "name": "SEEK Job Card Scraper",
-  "version": "1.2.1",
+  "version": "1.5.2",
   "description": "Reads job cards on SEEK search pages and exports them to CSV.",
   "permissions": [
     "storage",
     "scripting",
-    "activeTab"
+    "activeTab",
+    "alarms"
   ],
   "host_permissions": [
     "https://*.seek.com.au/*",
@@ -26,6 +27,9 @@
       ]
     }
   ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "action": {
     "default_popup": "popup.html",
     "default_title": "SEEK Scraper"

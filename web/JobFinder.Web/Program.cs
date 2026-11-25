@@ -22,6 +22,17 @@ builder.Services.AddHttpClient("nominatim", c =>
 builder.Services.AddSingleton<SuburbBoundaries>();
 builder.Services.AddSingleton<DistrictLookupService>();
 
+// The automatic watch keeps its settings in its own database (watch.db) and notifies through the public ntfy.sh server.
+builder.Services.AddDbContextFactory<WatchDbContext>(o =>
+    o.UseSqlite(builder.Configuration.GetConnectionString("Watch") ?? "Data Source=watch.db"));
+builder.Services.AddHttpClient("ntfy", c =>
+{
+    c.BaseAddress = new Uri(NtfyClient.Server + "/");
+    c.DefaultRequestHeaders.UserAgent.ParseAdd("JobFinder (personal job search tool; https://github.com/GLUR-DEV/job-finder)");
+});
+builder.Services.AddSingleton<NtfyClient>();
+builder.Services.AddSingleton<WatchService>();
+
 var app = builder.Build();
 
 // Create the SQLite file and tables on first run.
@@ -35,6 +46,10 @@ using (var scope = app.Services.CreateScope())
     using var districtDb = districtFactory.CreateDbContext();
     districtDb.Database.EnsureCreated();
 
+    var watchFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<WatchDbContext>>();
+    using var watchDb = watchFactory.CreateDbContext();
+    watchDb.Database.EnsureCreated();
+
     // Replace any circles or "not found" results from earlier runs with official Auckland suburb outlines.
     scope.ServiceProvider.GetRequiredService<DistrictLookupService>().ApplyOfficialBoundaries();
 }
@@ -45,42 +60,30 @@ app.MapStaticAssets();
 // API used by the Chrome extension. Accepts a JSON array of jobs and upserts them by id.
 app.MapPost("/api/jobs", async (List<JobDto> incoming, IDbContextFactory<JobDbContext> factory) =>
 {
-    var now = DateTime.UtcNow;
-
-    // If the same id appears twice in one request, the last one wins.
-    var valid = incoming
-        .Where(j => !string.IsNullOrWhiteSpace(j.Id))
-        .GroupBy(j => j.Id!.Trim())
-        .Select(g => (Id: g.Key, Dto: g.Last()))
-        .ToList();
-
     await using var db = await factory.CreateDbContextAsync();
-    int added = 0, updated = 0;
-
-    foreach (var chunk in valid.Chunk(200))
-    {
-        var ids = chunk.Select(c => c.Id).ToList();
-        var existing = await db.Jobs.Where(j => ids.Contains(j.Id)).ToDictionaryAsync(j => j.Id);
-
-        foreach (var (id, dto) in chunk)
-        {
-            if (existing.TryGetValue(id, out var job))
-            {
-                updated++;
-            }
-            else
-            {
-                job = new Job { Id = id };
-                db.Jobs.Add(job);
-                added++;
-            }
-            JobMapper.Apply(job, dto, now);
-        }
-        await db.SaveChangesAsync();
-    }
-
-    return Results.Ok(new { received = incoming.Count, added, updated, skipped = incoming.Count - valid.Count });
+    var r = await JobIngest.UpsertAsync(db, incoming, DateTime.UtcNow);
+    return Results.Ok(new { received = r.Received, added = r.Added, updated = r.Updated, skipped = r.Skipped });
 }).DisableAntiforgery();
+
+// The automatic watch. The extension scrape buttons tell the site which SEEK search to watch,
+// and the extension then polls /claim to find out when a scan is due.
+app.MapPost("/api/watch/url", async (WatchUrlDto dto, WatchService watch) =>
+    await watch.SetSearchUrlAsync(dto.Url)
+        ? Results.Ok(new { saved = true })
+        : Results.BadRequest(new { error = "Not a SEEK search link." })).DisableAntiforgery();
+
+app.MapPost("/api/watch/claim", async (WatchService watch) =>
+{
+    var claim = await watch.ClaimAsync();
+    return Results.Ok(claim is null
+        ? new { run = false, runId = "", url = "" }
+        : new { run = true, runId = claim.RunId, url = claim.Url });
+}).DisableAntiforgery();
+
+app.MapPost("/api/watch/results", async (WatchResultDto dto, WatchService watch) =>
+    await watch.CompleteAsync(dto)
+        ? Results.Ok(new { saved = true })
+        : Results.Conflict(new { error = "That scan is no longer the current one." })).DisableAntiforgery();
 
 // Jobs waiting for the extension to scrape their detail page.
 app.MapGet("/api/queue", async (IDbContextFactory<JobDbContext> factory) =>

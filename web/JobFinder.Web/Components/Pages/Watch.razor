@@ -1,0 +1,354 @@
+@page "/watch"
+@implements IDisposable
+@inject WatchService Service
+@inject IDbContextFactory<JobDbContext> DbFactory
+
+<PageTitle>Watch - Job Finder</PageTitle>
+
+@if (form is null || status is null)
+{
+    <p class="result-count">Loading...</p>
+}
+else
+{
+    <section class="panel" aria-label="Watch status">
+        <h2>Automatic watch</h2>
+        <p class="queue-note">
+            The site schedules the scans and the Chrome extension runs them, so the site must be running and Chrome open
+            with the extension installed. New jobs that match the filters below are sent to your phone through ntfy.
+        </p>
+
+        <label class="check">
+            <input type="checkbox" @bind="form.Enabled" />
+            <span>Watch is on</span>
+        </label>
+
+        <dl class="watch-status">
+            <dt>Search link</dt>
+            <dd>
+                @if (status.SearchUrl == "")
+                {
+                    <span class="muted">None yet. Open a SEEK search page and click Scrape this page or Scrape all pages in the extension.</span>
+                }
+                else
+                {
+                    <a href="@status.SearchUrl" target="_blank" rel="noopener noreferrer">@status.SearchUrl</a>
+                    @if (status.SearchUrlUpdatedAt is { } updatedAt)
+                    {
+                        <span class="muted"> (set @Local(updatedAt))</span>
+                    }
+                }
+            </dd>
+
+            <dt>Extension</dt>
+            <dd>@ExtensionLine</dd>
+
+            <dt>Next scan</dt>
+            <dd>@NextLine</dd>
+
+            <dt>Last scan</dt>
+            <dd>
+                @if (status.LastFinishedAt is { } finished)
+                {
+                    <span>@Local(finished)</span>
+                    @if (status.LastResult != "")
+                    {
+                        <span>. @status.LastResult</span>
+                    }
+                }
+                else
+                {
+                    <span class="muted">No scan has finished yet.</span>
+                }
+            </dd>
+        </dl>
+
+        @if (status.ClaimId != "" && WatchService.ClaimActive(status, DateTime.UtcNow))
+        {
+            <p class="map-status" role="status">A scan is running in Chrome now.</p>
+        }
+
+        @if (status.LastError != "")
+        {
+            <p class="map-status map-status-error" role="alert">@status.LastError</p>
+        }
+
+        <label class="field interval">
+            <span>Scan every (hours, minimum @(WatchSettings.MinIntervalMinutes / 60))</span>
+            <input type="number" min="@(WatchSettings.MinIntervalMinutes / 60)" max="@(WatchSettings.MaxIntervalMinutes / 60)" step="1"
+                   @bind="intervalHours" />
+        </label>
+    </section>
+
+    <section class="panel" aria-label="Which new jobs to notify about">
+        <h2>Notify me about new jobs that match</h2>
+        <p class="queue-note">
+            A job counts as new when this site has not saved it before. Only new jobs that pass these filters are sent to your phone.
+        </p>
+
+        <div class="filters filters-plain">
+            <label class="field field-wide">
+                <span>Keyword</span>
+                <input type="search" placeholder="Title, company or description" @bind="form.Keyword" />
+            </label>
+
+            <label class="field field-wide">
+                <span>Leave out jobs containing (separate with commas)</span>
+                <textarea rows="2" placeholder="For example: senior, manager, nurse" @bind="form.ExcludeKeywords"></textarea>
+            </label>
+
+            <label class="field">
+                <span>Location</span>
+                <select @bind="form.Location">
+                    <option value="">All locations</option>
+                    @foreach (var l in locations)
+                    {
+                        <option value="@l">@l</option>
+                    }
+                </select>
+            </label>
+
+            <label class="field">
+                <span>Work type</span>
+                <select @bind="form.WorkType">
+                    <option value="">All work types</option>
+                    @foreach (var w in workTypes)
+                    {
+                        <option value="@w">@w</option>
+                    }
+                </select>
+            </label>
+
+            <label class="field">
+                <span>Classification</span>
+                <select @bind="form.Classification" @bind:after="OnClassificationChangedAsync">
+                    <option value="">All classifications</option>
+                    @foreach (var c in classifications)
+                    {
+                        <option value="@c">@c</option>
+                    }
+                </select>
+            </label>
+
+            <label class="field">
+                <span>Sub-classification</span>
+                <select @bind="form.SubClass">
+                    <option value="">All sub-classifications</option>
+                    @foreach (var s in subClasses)
+                    {
+                        <option value="@s">@s</option>
+                    }
+                </select>
+            </label>
+
+            <label class="field">
+                <span>Listed</span>
+                <select @bind="form.ListedDays">
+                    <option value="0">Any time</option>
+                    <option value="1">Last 24 hours</option>
+                    <option value="3">Last 3 days</option>
+                    <option value="7">Last 7 days</option>
+                    <option value="14">Last 14 days</option>
+                    <option value="30">Last 30 days</option>
+                </select>
+            </label>
+
+            <label class="field">
+                <span>Applicant strength</span>
+                <select @bind="form.Applicant">
+                    <option value="">Any</option>
+                    <option value="strong">Strong applicant</option>
+                    <option value="very">Very strong applicant</option>
+                    <option value="both">Strong or very strong</option>
+                </select>
+            </label>
+        </div>
+
+        <p class="queue-note">
+            Up to @WatchService.MaxIndividual matching jobs are sent as separate notifications. More than that are sent as one summary.
+        </p>
+    </section>
+
+    <section class="panel" aria-label="Phone notifications">
+        <h2>Phone notifications (ntfy)</h2>
+        <p>
+            Install the ntfy app, tap <strong>+</strong>, keep the server as <code>ntfy.sh</code> and subscribe to this topic:
+        </p>
+        <p><code class="topic">@status.Topic</code></p>
+        <p class="queue-note">
+            Or open <a href="@NtfyClient.SubscribeUrl(status.Topic)" target="_blank" rel="noopener noreferrer">@NtfyClient.SubscribeUrl(status.Topic)</a>.
+            The topic is a random name on a public server, so anyone who knows it can read your notifications. Keep it private.
+        </p>
+
+        <div class="actions">
+            <button type="button" @onclick="SendTestAsync" disabled="@busy">Send test notification</button>
+            <button type="button" class="link-button" @onclick="NewTopicAsync" disabled="@busy">Generate a new topic</button>
+        </div>
+        @if (ntfyMessage != "")
+        {
+            <p class="queue-message" role="status">@ntfyMessage</p>
+        }
+    </section>
+
+    <div class="actions">
+        <button type="button" class="primary" @onclick="SaveAsync" disabled="@busy">Save</button>
+        <button type="button" @onclick="ScanNowAsync" disabled="@(busy || status.SearchUrl == "" || !status.Enabled)">Scan now</button>
+        @if (saveMessage != "")
+        {
+            <span class="queue-note" role="status">@saveMessage</span>
+        }
+    </div>
+}
+
+@code {
+    private WatchSettings? status;
+    private WatchSettings? form;
+    private int intervalHours = 4;
+    private bool busy;
+    private string saveMessage = "", ntfyMessage = "";
+
+    private List<string> locations = new(), workTypes = new(), classifications = new(), subClasses = new();
+    private Timer? timer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        status = await Service.GetAsync();
+        form = status.Copy();
+        intervalHours = Math.Max(WatchSettings.MinIntervalMinutes / 60, form.IntervalMinutes / 60);
+
+        await LoadOptionsAsync();
+
+        Service.Changed += OnWatchChanged;
+        // Keeps the "next scan" and "extension last checked" lines fresh.
+        timer = new Timer(_ => _ = InvokeAsync(StateHasChanged), null, TimeSpan.FromSeconds(15), TimeSpan.FromSeconds(15));
+    }
+
+    public void Dispose()
+    {
+        Service.Changed -= OnWatchChanged;
+        timer?.Dispose();
+    }
+
+    /// <summary>Only the status refreshes, so changes being made to the settings aren't overwritten.</summary>
+    private void OnWatchChanged() => _ = InvokeAsync(async () =>
+    {
+        status = await Service.GetAsync();
+        StateHasChanged();
+    });
+
+    private static string Local(DateTime utc) =>
+        DateTime.SpecifyKind(utc, DateTimeKind.Utc).ToLocalTime().ToString("d MMM yyyy HH:mm");
+
+    private string ExtensionLine
+    {
+        get
+        {
+            if (Service.LastPollAt is not { } at)
+                return "Has not checked in since the site started. Is Chrome open with the extension on?";
+            var ago = DateTime.UtcNow - at;
+            return ago.TotalSeconds < 90
+                ? "Running (checked in just now)."
+                : $"Last checked in {Local(at)}. Is Chrome still open?";
+        }
+    }
+
+    private string NextLine
+    {
+        get
+        {
+            if (status is null || !status.Enabled) return "The watch is off.";
+            if (status.SearchUrl == "") return "Waiting for a search link.";
+            if (WatchService.ClaimActive(status, DateTime.UtcNow)) return "Scanning now.";
+            if (status.RunRequested) return "Starting within a minute.";
+            if (WatchService.NextDue(status) is not { } due) return "Within a minute, as soon as the extension checks in.";
+            return DateTime.UtcNow >= due
+                ? "Due now. It starts when the extension next checks in."
+                : Local(due);
+        }
+    }
+
+    private static Task<List<string>> DistinctAsync(IQueryable<string> values) =>
+        values.Where(s => s != "").Distinct().OrderBy(s => s).ToListAsync();
+
+    private async Task LoadOptionsAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        locations = await DistinctAsync(db.Jobs.Select(j => j.Location));
+        workTypes = await DistinctAsync(db.Jobs.Select(j => j.WorkType));
+        classifications = await DistinctAsync(db.Jobs.Select(j => j.Classification));
+
+        var cls = form!.Classification;
+        subClasses = await DistinctAsync(
+            db.Jobs.Where(j => cls == "" || j.Classification == cls).Select(j => j.SubClass));
+
+        // Keep a saved choice selectable even if no saved job has it right now.
+        KeepSelected(locations, form.Location);
+        KeepSelected(workTypes, form.WorkType);
+        KeepSelected(classifications, form.Classification);
+        KeepSelected(subClasses, form.SubClass);
+    }
+
+    private static void KeepSelected(List<string> options, string value)
+    {
+        if (value == "" || options.Contains(value)) return;
+        options.Add(value);
+        options.Sort(StringComparer.Ordinal);
+    }
+
+    private async Task OnClassificationChangedAsync()
+    {
+        form!.SubClass = "";
+        await LoadOptionsAsync();
+    }
+
+    private async Task SaveAsync()
+    {
+        if (form is null) return;
+        if (intervalHours * 60 < WatchSettings.MinIntervalMinutes)
+        {
+            saveMessage = $"The shortest interval is {WatchSettings.MinIntervalMinutes / 60} hours.";
+            return;
+        }
+
+        busy = true;
+        form.IntervalMinutes = intervalHours * 60;
+        await Service.SaveAsync(form);
+        status = await Service.GetAsync();
+        saveMessage = "Saved.";
+        busy = false;
+    }
+
+    private async Task ScanNowAsync()
+    {
+        busy = true;
+        await SaveAsync();
+        await Service.RequestRunAsync();
+        saveMessage = "Saved. A scan will start within a minute.";
+        busy = false;
+    }
+
+    private async Task SendTestAsync()
+    {
+        busy = true;
+        ntfyMessage = "";
+        try
+        {
+            await Service.SendTestAsync();
+            ntfyMessage = "Test notification sent. Check your phone.";
+        }
+        catch (Exception ex)
+        {
+            ntfyMessage = "Could not send: " + ex.Message;
+        }
+        busy = false;
+    }
+
+    private async Task NewTopicAsync()
+    {
+        busy = true;
+        await Service.RegenerateTopicAsync();
+        status = await Service.GetAsync();
+        ntfyMessage = "New topic created. Subscribe to it in the ntfy app. The old one no longer receives anything.";
+        busy = false;
+    }
+}
