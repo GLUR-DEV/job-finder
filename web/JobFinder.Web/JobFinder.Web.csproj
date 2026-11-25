@@ -10,4 +10,8 @@
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Include="Data\auckland-suburbs.geojson" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

@@ -8,6 +8,20 @@ builder.Services.AddRazorComponents().AddInteractiveServerComponents();
 builder.Services.AddDbContextFactory<JobDbContext>(o =>
     o.UseSqlite(builder.Configuration.GetConnectionString("Jobs")));
 
+// The Map page keeps its cached district outlines in a separate database (districts.db).
+builder.Services.AddDbContextFactory<DistrictDbContext>(o =>
+    o.UseSqlite(builder.Configuration.GetConnectionString("Districts") ?? "Data Source=districts.db"));
+
+// Nominatim (OpenStreetMap search) asks for an identifying User-Agent and at most one request per second.
+builder.Services.AddHttpClient("nominatim", c =>
+{
+    c.BaseAddress = new Uri("https://nominatim.openstreetmap.org/");
+    c.DefaultRequestHeaders.UserAgent.ParseAdd("JobFinder/1.4.1 (personal job search tool; https://github.com/GLUR-DEV/job-finder)");
+    c.DefaultRequestHeaders.AcceptLanguage.ParseAdd("en");
+});
+builder.Services.AddSingleton<SuburbBoundaries>();
+builder.Services.AddSingleton<DistrictLookupService>();
+
 var app = builder.Build();
 
 // Create the SQLite file and tables on first run.
@@ -16,6 +30,13 @@ using (var scope = app.Services.CreateScope())
     var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<JobDbContext>>();
     using var db = factory.CreateDbContext();
     db.Database.EnsureCreated();
+
+    var districtFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<DistrictDbContext>>();
+    using var districtDb = districtFactory.CreateDbContext();
+    districtDb.Database.EnsureCreated();
+
+    // Replace any circles or "not found" results from earlier runs with official Auckland suburb outlines.
+    scope.ServiceProvider.GetRequiredService<DistrictLookupService>().ApplyOfficialBoundaries();
 }
 
 app.UseAntiforgery();

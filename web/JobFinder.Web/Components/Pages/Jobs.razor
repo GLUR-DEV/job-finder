@@ -1,4 +1,5 @@
 @page "/"
+@inherits FilteredPageBase
 @inject IDbContextFactory<JobDbContext> DbFactory
 
 <PageTitle>Job Finder</PageTitle>
@@ -7,12 +8,12 @@
     <label class="field field-wide">
         <span>Keyword</span>
         <input type="search" placeholder="Title, company or description"
-               @bind="keyword" @bind:event="oninput" @bind:after="ApplyFiltersAsync" />
+               @bind="Filter.Keyword" @bind:event="oninput" @bind:after="ApplyFiltersAsync" />
     </label>
 
     <label class="field">
         <span>Location</span>
-        <select @bind="location" @bind:after="ApplyFiltersAsync">
+        <select @bind="Filter.Location" @bind:after="ApplyFiltersAsync">
             <option value="">All locations</option>
             @foreach (var l in locations)
             {
@@ -23,7 +24,7 @@
 
     <label class="field">
         <span>Work type</span>
-        <select @bind="workType" @bind:after="ApplyFiltersAsync">
+        <select @bind="Filter.WorkType" @bind:after="ApplyFiltersAsync">
             <option value="">All work types</option>
             @foreach (var w in workTypes)
             {
@@ -34,7 +35,7 @@
 
     <label class="field">
         <span>Classification</span>
-        <select @bind="classification" @bind:after="OnClassificationChangedAsync">
+        <select @bind="Filter.Classification" @bind:after="OnClassificationChangedAsync">
             <option value="">All classifications</option>
             @foreach (var c in classifications)
             {
@@ -45,7 +46,7 @@
 
     <label class="field">
         <span>Sub-classification</span>
-        <select @bind="subClass" @bind:after="ApplyFiltersAsync">
+        <select @bind="Filter.SubClass" @bind:after="ApplyFiltersAsync">
             <option value="">All sub-classifications</option>
             @foreach (var s in subClasses)
             {
@@ -56,7 +57,7 @@
 
     <label class="field">
         <span>Listed</span>
-        <select @bind="listedDays" @bind:after="ApplyFiltersAsync">
+        <select @bind="Filter.ListedDays" @bind:after="ApplyFiltersAsync">
             <option value="0">Any time</option>
             <option value="1">Last 24 hours</option>
             <option value="3">Last 3 days</option>
@@ -68,7 +69,7 @@
 
     <label class="field">
         <span>Applicant strength</span>
-        <select @bind="applicant" @bind:after="ApplyFiltersAsync">
+        <select @bind="Filter.Applicant" @bind:after="ApplyFiltersAsync">
             <option value="">Any</option>
             <option value="strong">Strong applicant</option>
             <option value="very">Very strong applicant</option>
@@ -151,8 +152,7 @@
     /// <summary>The most jobs that can be queued for a detail scrape in one go.</summary>
     private const int MaxQueue = 75;
 
-    private string keyword = "", location = "", workType = "", classification = "", subClass = "", applicant = "";
-    private int listedDays, pageNumber = 1, total, queueCount;
+    private int pageNumber = 1, total, queueCount;
     private bool loading = true;
     private string queueMessage = "";
 
@@ -162,9 +162,7 @@
 
     private int TotalPages => Math.Max(1, (int)Math.Ceiling(total / (double)PageSize));
 
-    private bool HasFilters =>
-        keyword.Trim() != "" || location != "" || workType != "" ||
-        classification != "" || subClass != "" || applicant != "" || listedDays != 0;
+    private bool HasFilters => Filter.HasJobFilters;
 
     private bool CanQueue => !loading && total > 0 && total <= MaxQueue;
 
@@ -173,10 +171,16 @@
         total > MaxQueue ? $"Too many jobs to queue ({total}). Narrow the filters to {MaxQueue} or fewer." :
         $"Queues the {total} filtered {(total == 1 ? "job" : "jobs")} so the extension can scrape their full details.";
 
-    protected override async Task OnInitializedAsync()
+    protected override async Task OnInitializedAsync() => await LoadQueueCountAsync();
+
+    /// <summary>Runs on first load and whenever the query string changes (for example a district clicked on the Map page).</summary>
+    protected override async Task OnParametersSetAsync()
     {
+        if (!ApplyQuery()) return;
+
+        pageNumber = 1;
+        queueMessage = "";
         await LoadOptionsAsync();
-        await LoadQueueCountAsync();
         await LoadJobsAsync();
     }
 
@@ -190,7 +194,7 @@
         workTypes = await DistinctAsync(db.Jobs.Select(j => j.WorkType));
         classifications = await DistinctAsync(db.Jobs.Select(j => j.Classification));
 
-        var cls = classification;
+        var cls = Filter.Classification;
         subClasses = await DistinctAsync(
             db.Jobs.Where(j => cls == "" || j.Classification == cls).Select(j => j.SubClass));
     }
@@ -202,37 +206,8 @@
     }
 
     /// <summary>All jobs matching the current filters, ignoring paging.</summary>
-    private IQueryable<Job> FilteredJobs(JobDbContext db)
-    {
-        var q = db.Jobs.AsNoTracking().AsQueryable();
-
-        var k = keyword.Trim();
-        if (k != "")
-        {
-            var pattern = $"%{k}%";
-            q = q.Where(j => EF.Functions.Like(j.Title, pattern)
-                          || EF.Functions.Like(j.Company, pattern)
-                          || EF.Functions.Like(j.Description, pattern));
-        }
-
-        var loc = location; var wt = workType; var cls = classification; var sub = subClass;
-        if (loc != "") q = q.Where(j => j.Location == loc);
-        if (wt != "") q = q.Where(j => j.WorkType == wt);
-        if (cls != "") q = q.Where(j => j.Classification == cls);
-        if (sub != "") q = q.Where(j => j.SubClass == sub);
-
-        if (applicant == "strong") q = q.Where(j => j.ApplicantStrength == ApplicantStrengths.Strong);
-        else if (applicant == "very") q = q.Where(j => j.ApplicantStrength == ApplicantStrengths.VeryStrong);
-        else if (applicant == "both") q = q.Where(j => j.ApplicantStrength != "");
-
-        if (listedDays > 0)
-        {
-            var cutoff = DateTime.UtcNow.AddDays(-listedDays);
-            q = q.Where(j => j.ListedDate != null && j.ListedDate >= cutoff);
-        }
-
-        return q;
-    }
+    private IQueryable<Job> FilteredJobs(JobDbContext db) =>
+        JobQueries.Apply(db.Jobs.AsNoTracking(), Filter, favourites: false);
 
     private IOrderedQueryable<Job> InDisplayOrder(IQueryable<Job> q) =>
         q.OrderByDescending(j => j.ListedDate).ThenByDescending(j => j.ScrapedAt);
@@ -263,15 +238,14 @@
 
     private async Task OnClassificationChangedAsync()
     {
-        subClass = "";
+        Filter.SubClass = "";
         await LoadOptionsAsync();
         await ApplyFiltersAsync();
     }
 
     private async Task ClearFiltersAsync()
     {
-        keyword = location = workType = classification = subClass = applicant = "";
-        listedDays = 0;
+        Filter.Clear();
         await LoadOptionsAsync();
         await ApplyFiltersAsync();
     }

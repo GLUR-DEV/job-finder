@@ -1,0 +1,410 @@
+@page "/map"
+@using Microsoft.JSInterop
+@implements IAsyncDisposable
+@inject IDbContextFactory<JobDbContext> DbFactory
+@inject IDbContextFactory<DistrictDbContext> DistrictDbFactory
+@inject DistrictLookupService Lookup
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+
+<PageTitle>Map - Job Finder</PageTitle>
+
+<div class="mode-toggle" role="group" aria-label="Which jobs to show on the map">
+    <button type="button" class="@(favourites ? "" : "active")" aria-pressed="@(!favourites)" @onclick="() => SetModeAsync(false)">Jobs</button>
+    <button type="button" class="@(favourites ? "active" : "")" aria-pressed="@favourites" @onclick="() => SetModeAsync(true)">Favourites</button>
+</div>
+
+<section class="filters" aria-label="Map filters">
+    <label class="field field-wide">
+        <span>Keyword</span>
+        <input type="search" placeholder="@(favourites ? "Title, company, ad text, skills, email or phone" : "Title, company or description")"
+               @bind="filter.Keyword" @bind:event="oninput" @bind:after="ApplyFiltersAsync" />
+    </label>
+
+    <label class="field">
+        <span>Location</span>
+        <select @bind="filter.Location" @bind:after="ApplyFiltersAsync">
+            <option value="">All locations</option>
+            @foreach (var l in locations)
+            {
+                <option value="@l">@l</option>
+            }
+        </select>
+    </label>
+
+    <label class="field">
+        <span>Work type</span>
+        <select @bind="filter.WorkType" @bind:after="ApplyFiltersAsync">
+            <option value="">All work types</option>
+            @foreach (var w in workTypes)
+            {
+                <option value="@w">@w</option>
+            }
+        </select>
+    </label>
+
+    <label class="field">
+        <span>Classification</span>
+        <select @bind="filter.Classification" @bind:after="OnClassificationChangedAsync">
+            <option value="">All classifications</option>
+            @foreach (var c in classifications)
+            {
+                <option value="@c">@c</option>
+            }
+        </select>
+    </label>
+
+    <label class="field">
+        <span>Sub-classification</span>
+        <select @bind="filter.SubClass" @bind:after="ApplyFiltersAsync">
+            <option value="">All sub-classifications</option>
+            @foreach (var s in subClasses)
+            {
+                <option value="@s">@s</option>
+            }
+        </select>
+    </label>
+
+    <label class="field">
+        <span>Listed</span>
+        <select @bind="filter.ListedDays" @bind:after="ApplyFiltersAsync">
+            <option value="0">Any time</option>
+            <option value="1">Last 24 hours</option>
+            <option value="3">Last 3 days</option>
+            <option value="7">Last 7 days</option>
+            <option value="14">Last 14 days</option>
+            <option value="30">Last 30 days</option>
+        </select>
+    </label>
+
+    <label class="field">
+        <span>Applicant strength</span>
+        <select @bind="filter.Applicant" @bind:after="ApplyFiltersAsync">
+            <option value="">Any</option>
+            <option value="strong">Strong applicant</option>
+            <option value="very">Very strong applicant</option>
+            <option value="both">Strong or very strong</option>
+        </select>
+    </label>
+
+    @if (favourites)
+    {
+        <label class="field">
+            <span>Contact details</span>
+            <select @bind="filter.Contact" @bind:after="ApplyFiltersAsync">
+                <option value="">Any</option>
+                <option value="phone">Phone only</option>
+                <option value="email">Email only</option>
+                <option value="both">Phone &amp; email</option>
+                <option value="none">No contact details</option>
+            </select>
+        </label>
+
+        <label class="field">
+            <span>Work hours</span>
+            <select @bind="filter.Hours" @bind:after="ApplyFiltersAsync">
+                <option value="">Any</option>
+                <option value="yes">Hours available</option>
+                <option value="no">No hours found</option>
+            </select>
+        </label>
+    }
+
+    <button type="button" class="link-button" @onclick="ClearFiltersAsync" disabled="@(!HasFilters)">Clear filters</button>
+</section>
+
+<p class="result-count" aria-live="polite">
+    @if (loading)
+    {
+        <text>Loading jobs...</text>
+    }
+    else
+    {
+        <text>@total @(total == 1 ? "job" : "jobs") on the map@(HasFilters ? " match your filters" : favourites ? " (favourites)" : ""). Click a district to see them.</text>
+    }
+</p>
+
+@if (!loading && excluded > 0)
+{
+    <p class="map-status" role="status">
+        @excluded @(excluded == 1 ? "job has" : "jobs have") just "@SuburbBoundaries.RegionName" as the location, so
+        @(excluded == 1 ? "it isn't" : "they aren't") shown on the map.
+        <a href="@ExcludedHref">View @(excluded == 1 ? "it" : "them")</a>
+    </p>
+}
+
+@if (mapError != "")
+{
+    <p class="map-status map-status-error" role="alert">@mapError</p>
+}
+
+@if (Lookup.Running)
+{
+    <p class="map-status" role="status">
+        Finding district outlines on OpenStreetMap: @Lookup.Done of @Lookup.Total. This runs about one a second, so the first time it can take a while.
+    </p>
+}
+else if (Lookup.LastError != "")
+{
+    <p class="map-status map-status-error" role="alert">
+        Outline lookup stopped early: @Lookup.LastError
+        <button type="button" class="link-button" @onclick="() => Lookup.Start()">Try again</button>
+    </p>
+}
+
+@if (!Lookup.Running && unmapped.Count > 0)
+{
+    <details class="map-status">
+        <summary>@unmapped.Sum(u => u.Jobs) @(unmapped.Sum(u => u.Jobs) == 1 ? "job is" : "jobs are") in @unmapped.Count @(unmapped.Count == 1 ? "location" : "locations") not drawn on the map</summary>
+        <ul>
+            @foreach (var (name, jobs) in unmapped)
+            {
+                <li>@name (@jobs)</li>
+            }
+        </ul>
+        <button type="button" class="link-button" @onclick="() => Lookup.Start(retryNotFound: true)">Look these up again</button>
+    </details>
+}
+
+<div class="map-canvas" @ref="mapEl" aria-label="Map of job districts"></div>
+
+@code {
+    private readonly JobFilter filter = new();
+
+    private bool favourites, loading = true, mapReady, needsFit, disposed;
+    private int total, excluded;
+    private string mapError = "";
+
+    private List<string> locations = new(), workTypes = new(), classifications = new(), subClasses = new();
+
+    /// <summary>Jobs per location for the current filters.</summary>
+    private Dictionary<string, int> counts = new();
+
+    /// <summary>Districts already sent to the browser, so new ones are added as the lookup finds them.</summary>
+    private readonly HashSet<string> sent = new();
+
+    private List<(string Name, int Jobs)> unmapped = new();
+
+    private ElementReference mapEl;
+    private DotNetObjectReference<Map>? self;
+
+    private bool HasFilters => filter.Has(favourites);
+
+    /// <summary>The Jobs (or Favourites) page for the jobs that can't be placed on the map, with the current filters kept.</summary>
+    private string ExcludedHref => (favourites ? "/favourites" : "/") + filter.ToQueryString(favourites, SuburbBoundaries.RegionName);
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadOptionsAsync();
+        await LoadCountsAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+
+        try
+        {
+            self = DotNetObjectReference.Create(this);
+            await JS.InvokeVoidAsync("jobMap.init", mapEl, self);
+            mapReady = true;
+
+        }
+        catch (JSDisconnectedException) { return; }
+        catch (JSException ex)
+        {
+            mapError = $"The map couldn't load ({ex.Message}). It needs an internet connection for the map tiles and the Leaflet library.";
+            StateHasChanged();
+            return;
+        }
+
+        try
+        {
+            await SyncDistrictsAsync(fit: true);
+        }
+        catch (JSDisconnectedException) { return; }
+        catch (Exception ex)
+        {
+            mapError = $"Couldn't draw the districts: {ex.Message}";
+        }
+
+        // Missing outlines are looked up in the background; the map fills in as they arrive.
+        Lookup.Changed += OnLookupChanged;
+        Lookup.Start();
+
+        StateHasChanged();
+    }
+
+    private static Task<List<string>> DistinctAsync(IQueryable<string> values) =>
+        values.Where(s => s != "").Distinct().OrderBy(s => s).ToListAsync();
+
+    private async Task LoadOptionsAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        locations = await DistinctAsync(db.Jobs.Select(j => j.Location));
+        workTypes = await DistinctAsync(db.Jobs.Select(j => j.WorkType));
+        classifications = await DistinctAsync(db.Jobs.Select(j => j.Classification));
+
+        var cls = filter.Classification;
+        subClasses = await DistinctAsync(
+            db.Jobs.Where(j => cls == "" || j.Classification == cls).Select(j => j.SubClass));
+    }
+
+    /// <summary>Counts the jobs matching the filters in each location.</summary>
+    private async Task LoadCountsAsync()
+    {
+        loading = true;
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        var q = JobQueries.Apply(db.Jobs.AsNoTracking(), filter, favourites).Where(j => j.Location != "");
+
+        if (JobQueries.HoursActive(filter, favourites))
+        {
+            // Work hours are read from the ad text, which the database can't do.
+            var rows = await q.Select(j => new { j.Location, Description = j.Detail!.Description }).ToListAsync();
+            counts = rows
+                .Where(r => JobQueries.HoursMatch(r.Description, filter))
+                .GroupBy(r => r.Location)
+                .ToDictionary(g => g.Key, g => g.Count());
+        }
+        else
+        {
+            counts = await q
+                .GroupBy(j => j.Location)
+                .Select(g => new { Location = g.Key, Jobs = g.Count() })
+                .ToDictionaryAsync(x => x.Location, x => x.Jobs);
+        }
+
+        // Jobs that only say "Auckland" can't be placed, so they are left off the map and reported instead.
+        var regionOnly = counts.Keys.Where(SuburbBoundaries.IsRegionOnly).ToList();
+        excluded = regionOnly.Sum(k => counts[k]);
+        foreach (var key in regionOnly) counts.Remove(key);
+
+        total = counts.Values.Sum();
+        UpdateUnmapped();
+        loading = false;
+    }
+
+    private void UpdateUnmapped() =>
+        unmapped = counts
+            .Where(c => !sent.Contains(c.Key))
+            .OrderByDescending(c => c.Value)
+            .ThenBy(c => c.Key)
+            .Select(c => (c.Key, c.Value))
+            .ToList();
+
+    /// <summary>Sends any outlines the browser doesn't have yet, then the current job counts.</summary>
+    private async Task SyncDistrictsAsync(bool fit)
+    {
+        await using var districtDb = await DistrictDbFactory.CreateDbContextAsync();
+
+        var names = await districtDb.Districts.AsNoTracking()
+            .Where(d => d.Status != DistrictStatus.NotFound)
+            .Select(d => d.Name)
+            .ToListAsync();
+        var fresh = names.Where(n => !sent.Contains(n) && !SuburbBoundaries.IsRegionOnly(n)).ToList();
+
+        if (fresh.Count > 0)
+        {
+            var rows = await districtDb.Districts.AsNoTracking().Where(d => fresh.Contains(d.Name)).ToListAsync();
+            var payload = rows.Select(d => new
+            {
+                name = d.Name,
+                status = d.Status,
+                geoJson = d.GeoJson,
+                lat = d.Lat,
+                lon = d.Lon,
+                matched = d.MatchedName
+            }).ToList();
+
+            // Wrapped in object[] so the whole chunk is sent as ONE argument (a bare array would be spread into several).
+            foreach (var chunk in payload.Chunk(20))
+                await JS.InvokeVoidAsync("jobMap.upsert", new object[] { chunk });
+
+            foreach (var d in rows) sent.Add(d.Name);
+            needsFit = true;
+        }
+
+        await JS.InvokeVoidAsync("jobMap.setCounts", counts);
+
+        if (fit && needsFit)
+        {
+            await JS.InvokeVoidAsync("jobMap.fit");
+            needsFit = false;
+        }
+
+        UpdateUnmapped();
+    }
+
+    /// <summary>Raised from the lookup's background thread as outlines are found.</summary>
+    private void OnLookupChanged() => _ = InvokeAsync(async () =>
+    {
+        if (disposed) return;
+        try
+        {
+            if (mapReady) await SyncDistrictsAsync(fit: !Lookup.Running);
+            StateHasChanged();
+        }
+        catch (Exception ex) when (ex is JSDisconnectedException or ObjectDisposedException or TaskCanceledException) { }
+        catch (Exception ex)
+        {
+            mapError = $"Couldn't update the map: {ex.Message}";
+            StateHasChanged();
+        }
+    });
+
+    private async Task PushCountsAsync()
+    {
+        if (!mapReady) return;
+        await JS.InvokeVoidAsync("jobMap.setCounts", counts);
+    }
+
+    private async Task ApplyFiltersAsync()
+    {
+        await LoadCountsAsync();
+        await PushCountsAsync();
+    }
+
+    private async Task OnClassificationChangedAsync()
+    {
+        filter.SubClass = "";
+        await LoadOptionsAsync();
+        await ApplyFiltersAsync();
+    }
+
+    private async Task ClearFiltersAsync()
+    {
+        filter.Clear();
+        await LoadOptionsAsync();
+        await ApplyFiltersAsync();
+    }
+
+    private async Task SetModeAsync(bool showFavourites)
+    {
+        if (favourites == showFavourites) return;
+        favourites = showFavourites;
+        await ApplyFiltersAsync();
+    }
+
+    /// <summary>Called by the map when a district is clicked. Opens Jobs or Favourites with the same filters plus that location.</summary>
+    [JSInvokable]
+    public Task DistrictClicked(string name) => InvokeAsync(() =>
+    {
+        var query = filter.ToQueryString(favourites, name);
+        Nav.NavigateTo((favourites ? "/favourites" : "/") + query);
+    });
+
+    public async ValueTask DisposeAsync()
+    {
+        disposed = true;
+        Lookup.Changed -= OnLookupChanged;
+
+        if (mapReady)
+        {
+            try { await JS.InvokeVoidAsync("jobMap.dispose"); }
+            catch (JSDisconnectedException) { }
+            catch (JSException) { }
+        }
+        self?.Dispose();
+    }
+}

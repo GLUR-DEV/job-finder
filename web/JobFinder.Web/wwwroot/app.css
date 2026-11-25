@@ -231,3 +231,41 @@ input[type="search"], select {
 /* Favourites pills */
 .tag-contact { font-weight: 600; color: var(--accent); background: transparent; border: 1px solid var(--accent); }
 .tag-hours { font-weight: 600; background: var(--accent-soft); border: 1px solid var(--accent); }
+
+/* Map page */
+.mode-toggle { display: inline-flex; margin-bottom: 1rem; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.mode-toggle button {
+  padding: 0.5rem 1.25rem;
+  font: inherit;
+  color: var(--ink);
+  background: var(--surface);
+  border: 0;
+  cursor: pointer;
+}
+.mode-toggle button + button { border-left: 1px solid var(--line); }
+.mode-toggle button.active { font-weight: 600; color: var(--accent-ink); background: var(--accent); }
+
+.map-canvas {
+  height: 70vh;
+  min-height: 420px;
+  margin-top: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.map-status { margin: 0 0 0.75rem; padding: 0.6rem 0.8rem; font-size: 0.9rem; background: var(--accent-soft); border-radius: 6px; }
+.map-status-error { border: 1px solid var(--accent); }
+.map-status ul { margin: 0.5rem 0; padding-left: 1.25rem; }
+.map-status summary { cursor: pointer; }
+
+.map-legend {
+  padding: 0.5rem 0.7rem;
+  font-size: 0.85rem;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.map-legend-row { display: flex; align-items: center; gap: 0.4rem; }
+.map-legend-row i { width: 1.1rem; height: 0.8rem; border: 1px solid rgba(0, 0, 0, 0.25); }
+.map-matched { max-width: 18rem; font-size: 0.75rem; color: #5a6a75; white-space: normal; }

@@ -1,4 +1,5 @@
 @page "/favourites"
+@inherits FilteredPageBase
 @inject IDbContextFactory<JobDbContext> DbFactory
 
 <PageTitle>Favourites - Job Finder</PageTitle>
@@ -7,12 +8,23 @@
     <label class="field field-wide">
         <span>Keyword</span>
         <input type="search" placeholder="Title, company, ad text, skills, email or phone"
-               @bind="keyword" @bind:event="oninput" @bind:after="ApplyAsync" />
+               @bind="Filter.Keyword" @bind:event="oninput" @bind:after="ApplyAsync" />
+    </label>
+
+    <label class="field">
+        <span>Location</span>
+        <select @bind="Filter.Location" @bind:after="ApplyAsync">
+            <option value="">All locations</option>
+            @foreach (var l in locations)
+            {
+                <option value="@l">@l</option>
+            }
+        </select>
     </label>
 
     <label class="field">
         <span>Contact details</span>
-        <select @bind="contact" @bind:after="ApplyAsync">
+        <select @bind="Filter.Contact" @bind:after="ApplyAsync">
             <option value="">Any</option>
             <option value="phone">Phone only</option>
             <option value="email">Email only</option>
@@ -23,7 +35,7 @@
 
     <label class="field">
         <span>Work hours</span>
-        <select @bind="hours" @bind:after="ApplyAsync">
+        <select @bind="Filter.Hours" @bind:after="ApplyAsync">
             <option value="">Any</option>
             <option value="yes">Hours available</option>
             <option value="no">No hours found</option>
@@ -59,9 +71,9 @@
 }
 
 <div class="cards">
-    @foreach (var d in items)
+    @foreach (var job in items)
     {
-        <JobCard Item="d.Job!" ExtraTags="PillsFor(d)" Note="@($"Details scraped {JobDisplay.Utc(d.ScrapedAt)}")" OnSelected="Select" />
+        <JobCard Item="job" ExtraTags="PillsFor(job.Detail!)" Note="@($"Details scraped {JobDisplay.Utc(job.Detail!.ScrapedAt)}")" OnSelected="Select" />
     }
 </div>
 
@@ -74,18 +86,18 @@
     </nav>
 }
 
-@if (selected is { Job: not null } sel)
+@if (selected is { Detail: not null } sel)
 {
     <div class="overlay" @onclick="Close">
-        <div class="modal" role="dialog" aria-modal="true" aria-label="@sel.Job.Title" @onclick:stopPropagation>
+        <div class="modal" role="dialog" aria-modal="true" aria-label="@sel.Title" @onclick:stopPropagation>
             <button type="button" class="close" @onclick="Close" aria-label="Close">Close</button>
-            <h2>@sel.Job.Title</h2>
+            <h2>@sel.Title</h2>
 
             <h3>From the job page</h3>
-            <DetailList Rows="JobDisplay.DetailRows(sel)" />
+            <DetailList Rows="JobDisplay.DetailRows(sel.Detail!)" />
 
             <h3>From the search results card</h3>
-            <DetailList Rows="JobDisplay.JobRows(sel.Job)" />
+            <DetailList Rows="JobDisplay.JobRows(sel)" />
         </div>
     </div>
 }
@@ -93,17 +105,30 @@
 @code {
     private const int PageSize = 24;
 
-    private string keyword = "", contact = "", hours = "";
     private int pageNumber = 1, total;
     private bool loading = true;
 
-    private List<JobDetail> items = new();
-    private JobDetail? selected;
+    private List<Job> items = new();
+    private List<string> locations = new();
+    private Job? selected;
 
     private int TotalPages => Math.Max(1, (int)Math.Ceiling(total / (double)PageSize));
-    private bool HasFilters => keyword.Trim() != "" || contact != "" || hours != "";
 
-    protected override async Task OnInitializedAsync() => await LoadAsync();
+    /// <summary>
+    /// Anything set on the filter counts, including work type, classification, listed and applicant strength
+    /// when they arrive from the Map page. Those have no controls here and are applied silently.
+    /// </summary>
+    private bool HasFilters => Filter.Has(includeFavourite: true);
+
+    /// <summary>Runs on first load and whenever the query string changes (for example a district clicked on the Map page).</summary>
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!ApplyQuery()) return;
+
+        pageNumber = 1;
+        await LoadLocationsAsync();
+        await LoadAsync();
+    }
 
     /// <summary>The pills shown on a card: how to make contact, and whether the ad lists work hours.</summary>
     private static IReadOnlyList<Pill> PillsFor(JobDetail d)
@@ -120,42 +145,34 @@
         return pills;
     }
 
+    /// <summary>The locations that favourites have, for the Location filter.</summary>
+    private async Task LoadLocationsAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        locations = await db.Jobs
+            .Where(j => j.Detail != null && j.Location != "")
+            .Select(j => j.Location)
+            .Distinct()
+            .OrderBy(l => l)
+            .ToListAsync();
+
+        // Keep a location that came in through the link selectable even if it has no favourites.
+        if (Filter.Location != "" && !locations.Contains(Filter.Location))
+        {
+            locations.Add(Filter.Location);
+            locations.Sort(StringComparer.Ordinal);
+        }
+    }
+
     private async Task LoadAsync()
     {
         loading = true;
         await using var db = await DbFactory.CreateDbContextAsync();
 
-        var q = db.JobDetails.AsNoTracking().Include(d => d.Job).AsQueryable();
+        var q = JobQueries.Apply(db.Jobs.AsNoTracking().Include(j => j.Detail), Filter, favourites: true);
+        var ordered = q.OrderByDescending(j => j.Detail!.ScrapedAt);
 
-        var k = keyword.Trim();
-        if (k != "")
-        {
-            var p = $"%{k}%";
-            q = q.Where(d =>
-                EF.Functions.Like(d.Job!.Title, p) ||
-                EF.Functions.Like(d.Job!.Company, p) ||
-                EF.Functions.Like(d.Job!.Description, p) ||
-                EF.Functions.Like(d.Title, p) ||
-                EF.Functions.Like(d.Advertiser, p) ||
-                EF.Functions.Like(d.Description, p) ||
-                EF.Functions.Like(d.SkillsMatched, p) ||
-                EF.Functions.Like(d.SkillsSuggested, p) ||
-                EF.Functions.Like(d.EmployerQuestions, p) ||
-                EF.Functions.Like(d.Emails, p) ||
-                EF.Functions.Like(d.Phones, p));
-        }
-
-        switch (contact)
-        {
-            case "phone": q = q.Where(d => d.Phones != "" && d.Emails == ""); break;
-            case "email": q = q.Where(d => d.Emails != "" && d.Phones == ""); break;
-            case "both":  q = q.Where(d => d.Emails != "" && d.Phones != ""); break;
-            case "none":  q = q.Where(d => d.Emails == "" && d.Phones == ""); break;
-        }
-
-        var ordered = q.OrderByDescending(d => d.ScrapedAt);
-
-        if (hours == "")
+        if (!JobQueries.HoursActive(Filter, favourites: true))
         {
             total = await q.CountAsync();
             if (pageNumber > TotalPages) pageNumber = TotalPages;
@@ -165,9 +182,8 @@
         {
             // Hours are found by reading the ad text, which the database can't do, so this filter runs here.
             // The list of favourites is small, so loading the matches is fine.
-            var wantHours = hours == "yes";
             var matched = (await ordered.ToListAsync())
-                .Where(d => HoursDetector.Has(d.Description) == wantHours)
+                .Where(j => JobQueries.HoursMatch(j.Detail!.Description, Filter))
                 .ToList();
 
             total = matched.Count;
@@ -186,7 +202,7 @@
 
     private async Task ClearAsync()
     {
-        keyword = contact = hours = "";
+        Filter.Clear();
         await ApplyAsync();
     }
 
@@ -200,6 +216,6 @@
         if (pageNumber < TotalPages) { pageNumber++; await LoadAsync(); }
     }
 
-    private void Select(Job job) => selected = items.FirstOrDefault(d => d.JobId == job.Id);
+    private void Select(Job job) => selected = job;
     private void Close() => selected = null;
 }
