@@ -117,8 +117,6 @@
     }
 </p>
 
-@if (!IsTradeMe)
-{
 <section class="queue-bar" aria-label="Detail scrape queue">
     <button type="button" class="primary" @onclick="QueueAsync" disabled="@(!CanQueue)">Queue details scrape</button>
     <span class="queue-note">@QueueNote</span>
@@ -131,7 +129,6 @@
 @if (queueMessage != "")
 {
     <p class="queue-message" role="status">@queueMessage</p>
-}
 }
 
 @if (!loading && total == 0)
@@ -181,7 +178,7 @@
     /// <summary>The most jobs that can be queued for a detail scrape in one go.</summary>
     private const int MaxQueue = 75;
 
-    private int pageNumber = 1, total, queueTotal, queueCount;
+    private int pageNumber = 1, total, queueCount;
     private bool loading = true;
     private string queueMessage = "";
 
@@ -195,17 +192,13 @@
 
     private bool IsTradeMe => Filter.Source == JobSources.TradeMe;
 
-    // Only SEEK jobs can be queued: the extension reads details from SEEK job pages only.
-    private bool CanQueue => !loading && queueTotal > 0 && queueTotal <= MaxQueue;
-
-    private int TradeMeLeftOut => total - queueTotal;
+    // The page shows one site at a time, so everything filtered is from that site and can be queued.
+    private bool CanQueue => !loading && total > 0 && total <= MaxQueue;
 
     private string QueueNote =>
         total == 0 ? "" :
-        queueTotal == 0 ? "Trade Me jobs can't be queued for a details scrape yet." :
-        queueTotal > MaxQueue ? $"Too many SEEK jobs to queue ({queueTotal}). Narrow the filters to {MaxQueue} or fewer." :
-        $"Queues the {queueTotal} filtered SEEK {(queueTotal == 1 ? "job" : "jobs")} so the extension can scrape their full details."
-            + (TradeMeLeftOut > 0 ? $" {TradeMeLeftOut} Trade Me {(TradeMeLeftOut == 1 ? "job is" : "jobs are")} left out." : "");
+        total > MaxQueue ? $"Too many jobs to queue ({total}). Narrow the filters to {MaxQueue} or fewer." :
+        $"Queues the {total} filtered {JobSources.Label(Filter.Source)} {(total == 1 ? "job" : "jobs")} so the extension can scrape their full details.";
 
     protected override async Task OnInitializedAsync() => await LoadQueueCountAsync();
 
@@ -268,7 +261,6 @@
 
         var q = FilteredJobs(db);
         total = await q.CountAsync();
-        queueTotal = await q.CountAsync(j => j.Source == JobSources.Seek);
         if (pageNumber > TotalPages) pageNumber = TotalPages;
 
         jobs = await InDisplayOrder(q)
@@ -333,15 +325,13 @@
     {
         await using var db = await DbFactory.CreateDbContextAsync();
 
-        // SEEK jobs only: the extension can't scrape Trade Me job pages yet.
-        var ids = await InDisplayOrder(FilteredJobs(db).Where(j => j.Source == JobSources.Seek))
-            .Select(j => j.Id).ToListAsync();
+        var ids = await InDisplayOrder(FilteredJobs(db)).Select(j => j.Id).ToListAsync();
 
         if (ids.Count == 0 || ids.Count > MaxQueue)
         {
             queueMessage = ids.Count == 0
-                ? "No SEEK jobs to queue."
-                : $"Too many SEEK jobs to queue ({ids.Count}). Narrow the filters to {MaxQueue} or fewer.";
+                ? "No jobs to queue."
+                : $"Too many jobs to queue ({ids.Count}). Narrow the filters to {MaxQueue} or fewer.";
             return;
         }
 

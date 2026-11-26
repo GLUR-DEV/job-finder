@@ -2,7 +2,12 @@ using System.ComponentModel.DataAnnotations;
 
 namespace JobFinder.Web.Data;
 
-/// <summary>Everything scraped from a job's own SEEK page. One row per job, linked to <see cref="Job"/>.</summary>
+/// <summary>
+/// Everything scraped from a job's own page (SEEK or Trade Me). One row per job, linked to <see cref="Job"/>.
+/// Trade Me pages fill the same fields where they can (advertiser, location, work type, pay as <see cref="Salary"/>,
+/// the listed text as <see cref="Posted"/>, contacts and the ad), so the Favourites filters work on both sites.
+/// Fields only one site has stay empty for the other.
+/// </summary>
 public class JobDetail
 {
     [Key]
@@ -52,6 +57,26 @@ public class JobDetail
 
     /// <summary>The full job ad as plain text.</summary>
     public string Description { get; set; } = "";
+
+    // ---- Trade Me only (empty for SEEK jobs) ----
+
+    /// <summary>For example "Permanent" or "Contract".</summary>
+    public string Duration { get; set; } = "";
+
+    /// <summary>The "Company benefits" line from the key details.</summary>
+    public string CompanyBenefits { get; set; } = "";
+
+    /// <summary>The listing's reference number. Advertisers can type anything here, for example "81084" or "Summer Duty Manager".</summary>
+    public string ReferenceNumber { get; set; } = "";
+
+    /// <summary>The "Application details" text, for example "Apply online for this role or contact Stella Cliffe for more information."</summary>
+    public string ApplicationDetails { get; set; } = "";
+
+    /// <summary>The employer profile's "Contact person".</summary>
+    public string ContactPerson { get; set; } = "";
+
+    /// <summary>Any other key details Trade Me showed, one "Label: value" per line, so nothing is lost if a listing has extras.</summary>
+    public string OtherDetails { get; set; } = "";
 
     public DateTime ScrapedAt { get; set; }
     public DateTime ReceivedAt { get; set; }

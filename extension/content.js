@@ -252,6 +252,168 @@ function scrapeJobDetail() {
   };
 }
 
+// ---- Trade Me job page scraping ----
+// A Trade Me listing page has a header (title, company, listed date), a key details list (Location, Job type,
+// Duration, Approximate pay, ...), the ad text, an "Application details" section, and an employer profile with the
+// contact person and a "Show contact details" button. If a field comes back empty, inspect the page and update the selectors.
+
+// Drops the markdown symbols some advertisers leave in their ads ("**bold**", "__bold__", "# heading", "[text](link)").
+function stripMarkup(text) {
+  return (text || "")
+    .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, "$1 ($2)")
+    .replace(/\*{2,}/g, "")
+    .replace(/(^|[\s(])_{2}(\S(?:[^_\n]*\S)?)_{2}(?=$|[\s).,;:!?])/g, "$1$2")
+    .replace(/(^|[\s(])\*(\S(?:[^*\n]*\S)?)\*(?=$|[\s).,;:!?])/g, "$1$2")
+    .replace(/^[ \t]*#{1,6}[ \t]+/gm, "");
+}
+
+// Reads the ad text keeping its paragraphs, list items and the line breaks the advertiser typed. (innerText would
+// run lines together when an advertiser typed single line breaks inside one paragraph.)
+const TM_BLOCK_TAGS = new Set(["P", "DIV", "UL", "OL", "LI", "H1", "H2", "H3", "H4", "H5", "H6", "BLOCKQUOTE", "TABLE", "TR"]);
+
+function tmAdText(root) {
+  const out = [];
+  (function walk(node) {
+    if (node.nodeType === Node.TEXT_NODE) { out.push(node.nodeValue); return; }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const tag = node.tagName;
+    if (tag === "BR") { out.push("\n"); return; }
+    if (tag === "HR") { out.push("\n\n"); return; }
+    const block = TM_BLOCK_TAGS.has(tag);
+    if (block) out.push("\n");
+    if (tag === "LI") out.push("\u2022 ");
+    node.childNodes.forEach(walk);
+    if (block && tag !== "LI") out.push("\n");   // list items stay on consecutive lines
+  })(root);
+
+  return stripMarkup(out.join(""))
+    .replace(/\u00a0/g, " ")
+    .replace(/[\u2060\u200b-\u200d\ufeff\ufffc]/g, "")
+    .replace(/[ \t]+/g, " ")
+    .split("\n").map(l => l.trim()).join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+// The key details list as { "location": "...", "job type": "...", ... } plus the original labels in page order.
+function tmKeyDetails() {
+  const items = [];
+  document.querySelectorAll("tm-key-details-rack tg-rack-item").forEach(item => {
+    const label = clean((item.querySelector(".o-rack-item__primary-body") || {}).textContent);
+    const value = clean((item.querySelector(".o-rack-item__secondary") || {}).textContent);
+    if (label) items.push({ label, key: label.toLowerCase(), value });
+  });
+  return items;
+}
+
+// "Listed 2 days ago" without the "Be an early applicant" prompt that sits inside the same element.
+function tmListedText() {
+  const el = document.querySelector(".jb-listing__listing-date");
+  if (!el) return "";
+  const copy = el.cloneNode(true);
+  copy.querySelectorAll(".jb-listing__listing-date-fomo, tm-jobs-listing-fomo-info").forEach(n => n.remove());
+  return clean(copy.textContent);
+}
+
+// The paragraph under the "Application details" heading.
+function tmApplicationDetails(body) {
+  const h3 = [...(body || document).querySelectorAll("h3")].find(h => /^application details$/i.test(clean(h.textContent)));
+  const p = h3 && h3.nextElementSibling && h3.nextElementSibling.tagName === "P" ? h3.nextElementSibling : null;
+  return p ? clean(stripMarkup(p.textContent)) : "";
+}
+
+const TM_EMAIL = /[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}/g;
+// New Zealand numbers: start with 0 or +64 and have 9 to 11 digits in all, so times such as "0900 - 1200" don't match.
+const TM_PHONE = /(?<![\d.$,\/\-])(?:\+\s?64|0)(?:[\s\-().]*\d){8,10}(?!\d)/g;
+
+// Every email and phone number found in the given elements (mailto: and tel: links, including the one behind the
+// "Show contact details" button) and in the given text (ad, application details, employer profile).
+function tmContacts(elements, texts) {
+  const emails = new Map(), phones = new Map();
+
+  const addEmail = v => { v = clean(v); if (v) emails.set(v.toLowerCase(), emails.get(v.toLowerCase()) || v); };
+  const addPhone = v => {
+    v = clean(v);
+    let digits = v.replace(/\D/g, "");
+    if (/^\+/.test(v) && digits.startsWith("64")) digits = "0" + digits.slice(2);
+    if (digits.length >= 6 && !phones.has(digits)) phones.set(digits, v);
+  };
+
+  for (const root of elements.filter(Boolean)) {
+    root.querySelectorAll('a[href^="mailto:"], a[href^="tel:"]').forEach(a => {
+      const href = a.getAttribute("href") || "";
+      try {
+        if (/^mailto:/i.test(href)) addEmail(decodeURIComponent(href.slice(7).split("?")[0]));
+        else addPhone(decodeURIComponent(href.slice(4)));
+      } catch (e) { /* bad escape in href, ignore */ }
+    });
+  }
+
+  for (const text of texts) {
+    (text.match(TM_EMAIL) || []).forEach(addEmail);
+    (text.match(TM_PHONE) || []).forEach(addPhone);
+  }
+  return { emails: [...emails.values()], phones: [...phones.values()] };
+}
+
+// Reads a Trade Me listing page. Nothing is clicked: the contact phone number is already in the "Show contact
+// details" link, and the apply button is only read, never pressed.
+function scrapeTradeMeDetail() {
+  const body = document.querySelector("tm-jobs-listing-body");
+  const profile = document.querySelector(".tm-jobs-listing-company-contact__container, tm-jobs-listing-company-contact");
+  const adEl = document.querySelector(".tm-jobs-listing-body__item-content .tm-markdown, tm-markdown");
+
+  const key = tmKeyDetails();
+  const known = /^(location|job type|duration|approximate pay|pay|salary|company benefits)$/;
+  const valueOf = (...labels) => (key.find(k => labels.includes(k.key)) || {}).value || "";
+
+  const description = adEl ? tmAdText(adEl) : "";
+  const applicationDetails = tmApplicationDetails(body);
+
+  const profileName = profile ? clean((profile.querySelector(".tm-jobs-listing-company-contact__company-name") || {}).textContent) : "";
+  const personEl = profile && profile.querySelector(".tm-jobs-listing-company-contact__person-name");
+  const advertiserLink = profile && profile.querySelector('a[href*="/a/jobs/advertiser/"]');
+  const apply = document.querySelector("button.tm-jobs-listing-apply-button__apply-button");
+  const refEl = document.querySelector(".tm-jobs-listing-body__item-reference_number");
+  const idMatch = location.pathname.match(/\/listing\/(\d+)/);
+
+  const contacts = tmContacts(
+    [body, profile],
+    [description, applicationDetails, profile ? clean(profile.textContent) : ""]
+  );
+
+  return {
+    id: idMatch ? idMatch[1] : "",
+    url: location.origin + location.pathname,
+    title: textOf("h1.jb-listing__header-title"),
+    advertiser: profileName || textOf(".jb-listing__company-name"),
+    advertiserUrl: advertiserLink ? advertiserLink.href : "",
+    location: valueOf("location"),
+    classification: "",
+    workType: valueOf("job type"),
+    salary: valueOf("approximate pay", "pay", "salary"),
+    posted: tmListedText(),
+    applicationVolume: "",
+    applyType: apply ? clean(apply.textContent) : "",
+    applyUrl: "",
+    badges: "",
+    skillsSummary: "",
+    skillsMatched: "",
+    skillsSuggested: "",
+    employerQuestions: "",
+    emails: contacts.emails.join("; "),
+    phones: contacts.phones.join("; "),
+    description,
+    duration: valueOf("duration"),
+    companyBenefits: valueOf("company benefits"),
+    referenceNumber: refEl ? clean(stripMarkup(refEl.textContent)).replace(/^reference\s*#?\s*:?\s*/i, "") : "",
+    applicationDetails,
+    contactPerson: personEl ? clean(personEl.textContent) : "",
+    otherDetails: key.filter(k => !known.test(k.key)).map(k => `${k.label}: ${k.value}`).join("\n"),
+    scrapedAt: new Date().toISOString()
+  };
+}
+
 // Reads SEEK's pagination and result counter so the popup knows when the real results end.
 // Page 3 of 3 has no <a rel="next"> (Next is a dead <span>), and the current page is aria-current="page".
 function readPager() {
@@ -417,7 +579,7 @@ if (!window.__seekScraperLoaded) {
         ? { jobs: scrapeTradeMeJobs(), pager: readTradeMePager() }
         : { jobs: scrapeJobs(), pager: readPager() });
     } else if (msg && msg.type === "SCRAPE_DETAIL") {
-      sendResponse({ detail: scrapeJobDetail() });
+      sendResponse({ detail: IS_TRADEME ? scrapeTradeMeDetail() : scrapeJobDetail() });
     }
     return true;
   });

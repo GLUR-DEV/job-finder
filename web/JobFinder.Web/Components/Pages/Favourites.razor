@@ -4,23 +4,45 @@
 
 <PageTitle>Favourites - Job Finder</PageTitle>
 
+<div class="mode-toggle" role="group" aria-label="Which site's favourites to show">
+    <button type="button" class="@(IsTradeMe ? "" : "active")" aria-pressed="@(!IsTradeMe)" @onclick="() => SetSourceAsync(JobSources.Seek)">SEEK</button>
+    <button type="button" class="@(IsTradeMe ? "active" : "")" aria-pressed="@IsTradeMe" @onclick="() => SetSourceAsync(JobSources.TradeMe)">Trade Me</button>
+</div>
+
 <section class="filters" aria-label="Search and filter favourites">
     <label class="field field-wide">
         <span>Keyword</span>
-        <input type="search" placeholder="Title, company, ad text, skills, email or phone"
+        <input type="search" placeholder="Title, company, ad text, skills, email, phone or contact person"
                @bind="Filter.Keyword" @bind:event="oninput" @bind:after="ApplyAsync" />
     </label>
 
-    <label class="field">
-        <span>Location</span>
-        <select @bind="Filter.Location" @bind:after="ApplyAsync">
-            <option value="">All locations</option>
-            @foreach (var l in locations)
-            {
-                <option value="@l">@l</option>
-            }
-        </select>
-    </label>
+    @* Trade Me only places a job in a large district, so it gets a District filter instead of Location. *@
+    @if (IsTradeMe)
+    {
+        <label class="field">
+            <span>District</span>
+            <select @bind="Filter.District" @bind:after="ApplyAsync">
+                <option value="">All districts</option>
+                @foreach (var d in districts)
+                {
+                    <option value="@d">@d</option>
+                }
+            </select>
+        </label>
+    }
+    else
+    {
+        <label class="field">
+            <span>Location</span>
+            <select @bind="Filter.Location" @bind:after="ApplyAsync">
+                <option value="">All locations</option>
+                @foreach (var l in locations)
+                {
+                    <option value="@l">@l</option>
+                }
+            </select>
+        </label>
+    }
 
     <label class="field">
         <span>Contact details</span>
@@ -65,7 +87,7 @@
         }
         else
         {
-            <p>No favourites yet. On the Jobs page, filter to 75 jobs or fewer and click Queue details scrape, then click Scrape queued details in the extension.</p>
+            <p>No @(IsTradeMe ? "Trade Me " : "SEEK ")favourites yet. On the Jobs page, filter to 75 jobs or fewer and click Queue details scrape, then click Scrape queued details in the extension.</p>
         }
     </div>
 }
@@ -94,7 +116,7 @@
             <h2>@sel.Title</h2>
 
             <h3>From the job page</h3>
-            <DetailList Rows="JobDisplay.DetailRows(sel.Detail!)" />
+            <DetailList Rows="JobDisplay.DetailRows(sel.Detail!, sel.Source)" />
 
             <h3>From the search results card</h3>
             <DetailList Rows="JobDisplay.JobRows(sel)" />
@@ -109,7 +131,7 @@
     private bool loading = true;
 
     private List<Job> items = new();
-    private List<string> locations = new();
+    private List<string> locations = new(), districts = new();
     private Job? selected;
 
     private int TotalPages => Math.Max(1, (int)Math.Ceiling(total / (double)PageSize));
@@ -120,13 +142,18 @@
     /// </summary>
     private bool HasFilters => Filter.Has(includeFavourite: true);
 
+    private bool IsTradeMe => Filter.Source == JobSources.TradeMe;
+
     /// <summary>Runs on first load and whenever the query string changes (for example a district clicked on the Map page).</summary>
     protected override async Task OnParametersSetAsync()
     {
         if (!ApplyQuery()) return;
 
+        // The page always shows one site. Links without a site open the SEEK side.
+        if (Filter.Source == "") Filter.Source = JobSources.Seek;
+
         pageNumber = 1;
-        await LoadLocationsAsync();
+        await LoadOptionsAsync();
         await LoadAsync();
     }
 
@@ -145,23 +172,37 @@
         return pills;
     }
 
-    /// <summary>The locations that favourites have, for the Location filter.</summary>
-    private async Task LoadLocationsAsync()
+    /// <summary>The locations (SEEK) and districts (Trade Me) that this site's favourites have, for the filters.</summary>
+    private async Task LoadOptionsAsync()
     {
         await using var db = await DbFactory.CreateDbContextAsync();
-        locations = await db.Jobs
-            .Where(j => j.Detail != null && j.Location != "")
-            .Select(j => j.Location)
-            .Distinct()
-            .OrderBy(l => l)
-            .ToListAsync();
+        var src = Filter.Source;
+        var scoped = db.Jobs.Where(j => j.Detail != null && j.Source == src);
 
-        // Keep a location that came in through the link selectable even if it has no favourites.
+        locations = await scoped.Where(j => j.Location != "").Select(j => j.Location).Distinct().OrderBy(l => l).ToListAsync();
+        districts = await scoped.Where(j => j.District != "").Select(j => j.District).Distinct().OrderBy(d => d).ToListAsync();
+
+        // Keep a value that came in through the link selectable even if it has no favourites.
         if (Filter.Location != "" && !locations.Contains(Filter.Location))
         {
             locations.Add(Filter.Location);
             locations.Sort(StringComparer.Ordinal);
         }
+        if (Filter.District != "" && !districts.Contains(Filter.District))
+        {
+            districts.Add(Filter.District);
+            districts.Sort(StringComparer.Ordinal);
+        }
+    }
+
+    /// <summary>Switches between the SEEK and Trade Me favourites. Each side has its own filters, so they start fresh.</summary>
+    private async Task SetSourceAsync(string source)
+    {
+        if (Filter.Source == source) return;
+        Filter.Clear();
+        Filter.Source = source;
+        await LoadOptionsAsync();
+        await ApplyAsync();
     }
 
     private async Task LoadAsync()

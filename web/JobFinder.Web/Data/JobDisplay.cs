@@ -65,8 +65,36 @@ public static class JobDisplay
         return rows;
     }
 
-    /// <summary>Every field scraped from the job's own page.</summary>
-    public static IEnumerable<Row> DetailRows(JobDetail d) => new[]
+    /// <summary>Every field scraped from the job's own page. SEEK and Trade Me pages each show their own fields.</summary>
+    public static IEnumerable<Row> DetailRows(JobDetail d, string source = JobSources.Seek) =>
+        source == JobSources.TradeMe ? TradeMeDetailRows(d) : SeekDetailRows(d);
+
+    private static IEnumerable<Row> TradeMeDetailRows(JobDetail d) => new[]
+    {
+        new Row("Title on job page", d.Title),
+        new Row("Advertiser", d.Advertiser),
+        new Row("Advertiser's other listings", d.AdvertiserUrl, Link: true),
+        new Row("Contact person", d.ContactPerson),
+        new Row("Location", d.Location),
+        new Row("Job type", d.WorkType),
+        new Row("Duration", d.Duration),
+        new Row("Approximate pay", d.Salary),
+        new Row("Company benefits", d.CompanyBenefits),
+        new Row("Other key details", d.OtherDetails, Multiline: true),
+        new Row("Listed (as shown on Trade Me)", d.Posted),
+        new Row("Reference #", d.ReferenceNumber),
+        new Row("Apply button", d.ApplyType),
+        new Row("Application details", d.ApplicationDetails, Multiline: true),
+        new Row("Contact emails", d.Emails),
+        new Row("Contact phone numbers", d.Phones),
+        new Row("Hours mentioned in the ad (detected)", string.Join("; ", HoursDetector.Matches(d.Description))),
+        new Row("Full job ad", d.Description, Multiline: true),
+        new Row("Job page URL", d.Url, Link: true),
+        new Row("Details scraped", Utc(d.ScrapedAt)),
+        new Row("Details received by this site", Utc(d.ReceivedAt)),
+    };
+
+    private static IEnumerable<Row> SeekDetailRows(JobDetail d) => new[]
     {
         new Row("Title on job page", d.Title),
         new Row("Advertiser", d.Advertiser),

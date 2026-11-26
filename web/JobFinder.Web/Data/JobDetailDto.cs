@@ -1,6 +1,6 @@
 namespace JobFinder.Web.Data;
 
-/// <summary>Shape of a job's detail page as sent by the Chrome extension (camelCase JSON).</summary>
+/// <summary>Shape of a job's detail page as sent by the Chrome extension (camelCase JSON). The last six fields are Trade Me only.</summary>
 public record JobDetailDto(
     string? Id,
     string? Url,
@@ -23,4 +23,10 @@ public record JobDetailDto(
     string? Emails,
     string? Phones,
     string? Description,
-    string? ScrapedAt);
+    string? ScrapedAt,
+    string? Duration = null,
+    string? CompanyBenefits = null,
+    string? ReferenceNumber = null,
+    string? ApplicationDetails = null,
+    string? ContactPerson = null,
+    string? OtherDetails = null);

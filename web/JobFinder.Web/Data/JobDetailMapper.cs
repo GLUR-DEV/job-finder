@@ -26,6 +26,12 @@ public static class JobDetailMapper
         detail.Emails = Clean(d.Emails);
         detail.Phones = Clean(d.Phones);
         detail.Description = Clean(d.Description);
+        detail.Duration = Clean(d.Duration);
+        detail.CompanyBenefits = Clean(d.CompanyBenefits);
+        detail.ReferenceNumber = Clean(d.ReferenceNumber);
+        detail.ApplicationDetails = Clean(d.ApplicationDetails);
+        detail.ContactPerson = Clean(d.ContactPerson);
+        detail.OtherDetails = Clean(d.OtherDetails);
 
         detail.ScrapedAt = DateTime.TryParse(d.ScrapedAt, CultureInfo.InvariantCulture,
             DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var dt) ? dt : nowUtc;

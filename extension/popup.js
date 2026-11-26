@@ -244,7 +244,7 @@ autoSendEl.addEventListener("change", () => chrome.storage.local.set({ autoSend:
 
 // ---- Scrape queued job details ----
 const DETAIL_WAIT_MS = 10000;
-const DETAIL_DELAY_MS = 1500;   // pause between job pages to be polite to SEEK
+const DETAIL_DELAY_MS = 1500;   // pause between job pages to be polite to SEEK and Trade Me
 
 async function fetchQueue() {
   let res;
@@ -308,7 +308,7 @@ document.getElementById("scrapeQueue").addEventListener("click", async () => {
       statusEl.textContent = `Scraping job ${i + 1}/${total}... ${done} saved, ${failed.length} failed.`;
 
       try {
-        if (!item.url || !SEEK_URL.test(item.url)) throw new Error("not a SEEK job URL");
+        if (!item.url || !(SEEK_URL.test(item.url) || TRADEME_URL.test(item.url))) throw new Error("not a SEEK or Trade Me job URL");
 
         if (!workTab) workTab = await chrome.tabs.create({ url: item.url, active: false });
         else await chrome.tabs.update(workTab.id, { url: item.url });
@@ -317,7 +317,8 @@ document.getElementById("scrapeQueue").addEventListener("click", async () => {
         const tab = await chrome.tabs.get(workTab.id);
         const detail = await scrapeDetailWhenReady(tab);
         if (!detail) throw new Error("the job page couldn't be read (it may have expired)");
-        if (detail.id && detail.id !== item.id) throw new Error("SEEK showed a different job");
+        // Trade Me ids are stored with a "tm-" prefix (see JobSources.TradeMeIdPrefix) but the page only knows the number.
+        if (detail.id && detail.id !== item.id.replace(/^tm-/, "")) throw new Error("the site showed a different job");
 
         detail.id = item.id;
         await postDetail(detail);

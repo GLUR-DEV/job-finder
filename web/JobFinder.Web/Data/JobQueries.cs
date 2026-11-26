@@ -36,7 +36,11 @@ public static class JobQueries
                               || EF.Functions.Like(j.Detail!.SkillsSuggested, p)
                               || EF.Functions.Like(j.Detail!.EmployerQuestions, p)
                               || EF.Functions.Like(j.Detail!.Emails, p)
-                              || EF.Functions.Like(j.Detail!.Phones, p));
+                              || EF.Functions.Like(j.Detail!.Phones, p)
+                              || EF.Functions.Like(j.Detail!.ContactPerson, p)
+                              || EF.Functions.Like(j.Detail!.CompanyBenefits, p)
+                              || EF.Functions.Like(j.Detail!.ApplicationDetails, p)
+                              || EF.Functions.Like(j.Detail!.ReferenceNumber, p));
             }
         }
 
