@@ -83,7 +83,7 @@ async function trySend(jobs) {
 document.getElementById("scrape").addEventListener("click", async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   const isTM = TRADEME_URL.test(tab?.url || "");
-  reportSearchUrl(tab?.url);   // lets the site's automatic watch know which search to rescan (SEEK only)
+  reportSearchUrl(tab?.url);   // lets the site's automatic watch know which search to rescan (SEEK or Trade Me)
   try {
     const res = await requestJobs(tab);
     const found = res?.jobs || [];
@@ -129,7 +129,7 @@ document.getElementById("scrapeAll").addEventListener("click", async () => {
     return;
   }
 
-  reportSearchUrl(activeTab.url);   // lets the site's automatic watch know which search to rescan (SEEK only)
+  reportSearchUrl(activeTab.url);   // lets the site's automatic watch know which search to rescan (SEEK or Trade Me)
   stopRequested = false;
   setBusy(true);
   const key = isTM ? TM_KEY : SEEK_KEY;

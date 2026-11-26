@@ -10,26 +10,48 @@ public record WatchUrlDto(string? Url);
 /// <summary>Body of POST /api/watch/results: everything the extension scraped for one scan.</summary>
 public record WatchResultDto(string? RunId, List<JobDto>? Jobs, int Pages, string? Error);
 
-/// <summary>What the extension is told to do when a scan is due.</summary>
-public record WatchClaim(string RunId, string Url);
+/// <summary>What the extension is told to do when a scan is due. <paramref name="Source"/> is the site being scanned.</summary>
+public record WatchClaim(string RunId, string Url, string Source);
 
-/// <summary>Checks and tidies the SEEK link the watch rescans.</summary>
+/// <summary>A search link the watch accepted: which site it is for and the tidied link.</summary>
+public record WatchLink(string Source, string Url);
+
+/// <summary>Checks and tidies the SEEK or Trade Me search link the watch rescans.</summary>
 public static partial class WatchUrl
 {
     [GeneratedRegex(@"^([^.]+\.)*seek\.(com(\.au)?|co\.nz)$", RegexOptions.IgnoreCase)]
     private static partial Regex SeekHost();
 
-    /// <summary>
-    /// Returns the link without its page number (so scans always start at page 1) and fragment,
-    /// or null if it isn't an https SEEK search link.
-    /// </summary>
-    public static string? Normalise(string? raw)
-    {
-        if (!Uri.TryCreate(raw?.Trim(), UriKind.Absolute, out var uri)) return null;
-        if (uri.Scheme != Uri.UriSchemeHttps || !SeekHost().IsMatch(uri.Host)) return null;
+    [GeneratedRegex(@"^([^.]+\.)*trademe\.co\.nz$", RegexOptions.IgnoreCase)]
+    private static partial Regex TradeMeHost();
 
-        // A single job's own page isn't a search.
-        if (uri.AbsolutePath.StartsWith("/job/", StringComparison.OrdinalIgnoreCase)) return null;
+    /// <summary>
+    /// Returns the site and the link without its page number (so scans always start at page 1) and fragment,
+    /// or null if it isn't an https SEEK or Trade Me jobs search link.
+    /// </summary>
+    public static WatchLink? Parse(string? raw)
+    {
+        if (!Uri.TryCreate(raw?.Trim(), UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps) return null;
+
+        var path = uri.AbsolutePath;
+        string source;
+        if (SeekHost().IsMatch(uri.Host))
+        {
+            // A single job's own page isn't a search.
+            if (path.StartsWith("/job/", StringComparison.OrdinalIgnoreCase)) return null;
+            source = JobSources.Seek;
+        }
+        else if (TradeMeHost().IsMatch(uri.Host))
+        {
+            // Job searches live under /a/jobs/..., and a single listing's page has /listing/<id> in it.
+            if (!path.StartsWith("/a/jobs", StringComparison.OrdinalIgnoreCase)) return null;
+            if (path.Contains("/listing/", StringComparison.OrdinalIgnoreCase)) return null;
+            source = JobSources.TradeMe;
+        }
+        else
+        {
+            return null;
+        }
 
         var query = uri.Query.TrimStart('?')
             .Split('&', StringSplitOptions.RemoveEmptyEntries)
@@ -37,15 +59,16 @@ public static partial class WatchUrl
                      && !p.StartsWith("page=", StringComparison.OrdinalIgnoreCase));
 
         var builder = new UriBuilder(uri) { Fragment = "", Query = string.Join("&", query) };
-        return builder.Uri.ToString();
+        return new WatchLink(source, builder.Uri.ToString());
     }
 }
 
 /// <summary>
-/// Runs the automatic watch. The site decides when a scan is due and keeps all the settings. The extension
-/// polls <see cref="ClaimAsync"/>, scrapes the saved SEEK search, and hands the jobs back to
-/// <see cref="CompleteAsync"/>, which saves them, works out which are new and worth a notification,
-/// and sends them to ntfy.
+/// Runs the automatic watch for SEEK and Trade Me. The site decides when a scan is due and keeps all the settings.
+/// The on/off switch and interval are shared, so both sites are scanned on the same schedule, one after the other.
+/// The extension polls <see cref="ClaimAsync"/>, scrapes the saved search for the site it is given, and hands the jobs
+/// back to <see cref="CompleteAsync"/>, which saves them, works out which are new and worth a notification, and sends
+/// them to ntfy. Both sites publish to the same ntfy topic.
 /// </summary>
 public class WatchService(
     IDbContextFactory<WatchDbContext> watchFactory,
@@ -61,6 +84,9 @@ public class WatchService(
 
     private const int SummaryLines = 10;
 
+    /// <summary>The sites in the order they are scanned.</summary>
+    private static readonly string[] Sites = { JobSources.Seek, JobSources.TradeMe };
+
     private readonly SemaphoreSlim gate = new(1, 1);
 
     /// <summary>When the extension last asked whether a scan was due (since the site started). Shows if the extension is running.</summary>
@@ -74,62 +100,78 @@ public class WatchService(
     private static string NewTopic() =>
         "jobfinder-" + Convert.ToHexString(RandomNumberGenerator.GetBytes(12)).ToLowerInvariant();
 
-    private static async Task<WatchSettings> LoadAsync(WatchDbContext db)
+    /// <summary>
+    /// Both watch rows, SEEK first and Trade Me second, creating whichever is missing. The SEEK row also holds the settings
+    /// the two sites share (on/off, interval and the ntfy topic).
+    /// </summary>
+    private static async Task<List<WatchSettings>> LoadAllAsync(WatchDbContext db)
     {
-        var w = await db.Watch.FirstOrDefaultAsync();
-        if (w is null)
+        var rows = await db.Watch.OrderBy(w => w.Id).ToListAsync();
+        var changed = false;
+
+        foreach (var site in Sites)
         {
-            w = new WatchSettings { Topic = NewTopic() };
-            db.Watch.Add(w);
-            await db.SaveChangesAsync();
+            var id = WatchSettings.IdFor(site);
+            if (rows.Any(r => r.Id == id)) continue;
+            var row = new WatchSettings { Id = id, Source = site };
+            db.Watch.Add(row);
+            rows.Add(row);
+            changed = true;
         }
-        return w;
+
+        var main = rows.First(r => r.Id == WatchSettings.SeekId);
+        if (main.Topic == "")
+        {
+            main.Topic = NewTopic();
+            changed = true;
+        }
+
+        if (changed) await db.SaveChangesAsync();
+        return rows.OrderBy(r => r.Id).ToList();
     }
 
     public static bool ClaimActive(WatchSettings w, DateTime nowUtc) =>
         w.ClaimId != "" && w.ClaimedAt is { } at && nowUtc < at.AddMinutes(ClaimMinutes);
 
-    public static bool IsDue(WatchSettings w, DateTime nowUtc) =>
-        w.Enabled && w.SearchUrl != "" && !ClaimActive(w, nowUtc) &&
-        (w.RunRequested || w.LastAttemptAt is null || nowUtc >= w.LastAttemptAt.Value.AddMinutes(w.IntervalMinutes));
+    /// <summary>Whether a site's scan is due. <paramref name="main"/> is the SEEK row, which holds the shared on/off switch and interval.</summary>
+    public static bool IsDue(WatchSettings w, WatchSettings main, DateTime nowUtc) =>
+        main.Enabled && w.SearchUrl != "" && !ClaimActive(w, nowUtc) &&
+        (w.RunRequested || w.LastAttemptAt is null || nowUtc >= w.LastAttemptAt.Value.AddMinutes(main.IntervalMinutes));
 
-    /// <summary>When the next scan is due, or null if none has run yet.</summary>
-    public static DateTime? NextDue(WatchSettings w) => w.LastAttemptAt?.AddMinutes(w.IntervalMinutes);
+    /// <summary>When a site's next scan is due, or null if none has run yet.</summary>
+    public static DateTime? NextDue(WatchSettings w, WatchSettings main) => w.LastAttemptAt?.AddMinutes(main.IntervalMinutes);
 
-    /// <summary>The current settings and state. Safe to read from anywhere; changes don't write back.</summary>
-    public async Task<WatchSettings> GetAsync()
+    /// <summary>The current settings and state: the SEEK row first, then the Trade Me row. Changes made to them don't write back.</summary>
+    public async Task<List<WatchSettings>> GetAllAsync()
     {
         await gate.WaitAsync();
         try
         {
             await using var db = await watchFactory.CreateDbContextAsync();
-            return await LoadAsync(db);
+            return await LoadAllAsync(db);
         }
         finally { gate.Release(); }
     }
 
-    /// <summary>Saves the settings made on the Watch page. Link, topic and scan state are not touched.</summary>
-    public async Task SaveAsync(WatchSettings edited)
+    /// <summary>
+    /// Saves the settings made on the Watch page: the shared on/off switch and interval, and each site's filters.
+    /// Links, the topic and scan state are not touched.
+    /// </summary>
+    public async Task SaveAsync(bool enabled, int intervalMinutes, WatchSettings seekEdits, WatchSettings tradeMeEdits)
     {
         await gate.WaitAsync();
         try
         {
             await using var db = await watchFactory.CreateDbContextAsync();
-            var w = await LoadAsync(db);
+            var rows = await LoadAllAsync(db);
+            var seek = rows.First(r => r.Id == WatchSettings.SeekId);
+            var tradeMe = rows.First(r => r.Id == WatchSettings.TradeMeId);
 
-            w.Enabled = edited.Enabled;
-            w.IntervalMinutes = Math.Clamp(edited.IntervalMinutes, WatchSettings.MinIntervalMinutes, WatchSettings.MaxIntervalMinutes);
+            seek.Enabled = enabled;
+            seek.IntervalMinutes = Math.Clamp(intervalMinutes, WatchSettings.MinIntervalMinutes, WatchSettings.MaxIntervalMinutes);
 
-            // Passing the values through JobFilter drops anything the Jobs page wouldn't accept.
-            var f = edited.ToFilter();
-            w.Keyword = f.Keyword;
-            w.Location = f.Location;
-            w.WorkType = f.WorkType;
-            w.Classification = f.Classification;
-            w.SubClass = f.SubClass;
-            w.ListedDays = f.ListedDays;
-            w.Applicant = f.Applicant;
-            w.ExcludeKeywords = (edited.ExcludeKeywords ?? "").Trim();
+            ApplyFilterEdits(seek, seekEdits);
+            ApplyFilterEdits(tradeMe, tradeMeEdits);
 
             await db.SaveChangesAsync();
         }
@@ -137,21 +179,49 @@ public class WatchService(
         Raise();
     }
 
-    /// <summary>Stores the SEEK search the watch should rescan. Returns false if the link isn't a SEEK search.</summary>
+    /// <summary>Copies the filters from a page form onto the stored row for the same site.</summary>
+    private static void ApplyFilterEdits(WatchSettings row, WatchSettings edits)
+    {
+        // Passing the values through JobFilter drops anything the Jobs page wouldn't accept.
+        var f = new JobFilter();
+        f.Load(edits.Keyword, edits.Location, edits.WorkType, edits.Classification, edits.SubClass,
+               edits.ListedDays, edits.Applicant, null, null, row.Source, edits.District);
+
+        row.Keyword = f.Keyword;
+        row.Location = row.Source == JobSources.TradeMe ? "" : f.Location;   // Trade Me jobs are filtered by district
+        row.District = row.Source == JobSources.TradeMe ? f.District : "";
+        row.WorkType = f.WorkType;
+        row.Classification = f.Classification;
+        row.SubClass = f.SubClass;
+        row.ListedDays = f.ListedDays;
+        row.Applicant = f.Applicant;   // empty for Trade Me: its jobs have no applicant strength
+        row.ExcludeKeywords = (edits.ExcludeKeywords ?? "").Trim();
+
+        var tradeMe = row.Source == JobSources.TradeMe;
+        row.SkipPromoted = tradeMe && edits.SkipPromoted;
+        row.QuickApplyOnly = tradeMe && edits.QuickApplyOnly;
+        row.PayListedOnly = tradeMe && edits.PayListedOnly;
+    }
+
+    /// <summary>
+    /// Stores a search link for the site it belongs to (a SEEK link for the SEEK watch, a Trade Me link for the Trade Me watch).
+    /// Returns false if the link isn't a SEEK or Trade Me jobs search.
+    /// </summary>
     public async Task<bool> SetSearchUrlAsync(string? url)
     {
-        var clean = WatchUrl.Normalise(url);
-        if (clean is null) return false;
+        var link = WatchUrl.Parse(url);
+        if (link is null) return false;
 
         await gate.WaitAsync();
         try
         {
             await using var db = await watchFactory.CreateDbContextAsync();
-            var w = await LoadAsync(db);
-            if (w.SearchUrl != clean)
+            var rows = await LoadAllAsync(db);
+            var row = rows.First(r => r.Id == WatchSettings.IdFor(link.Source));
+            if (row.SearchUrl != link.Url)
             {
-                w.SearchUrl = clean;
-                w.SearchUrlUpdatedAt = DateTime.UtcNow;
+                row.SearchUrl = link.Url;
+                row.SearchUrlUpdatedAt = DateTime.UtcNow;
                 await db.SaveChangesAsync();
             }
         }
@@ -160,16 +230,15 @@ public class WatchService(
         return true;
     }
 
-    /// <summary>Makes the next check by the extension start a scan, if the watch is on and has a link.</summary>
+    /// <summary>Makes the next checks by the extension start a scan of each site that has a link, if the watch is on.</summary>
     public async Task RequestRunAsync()
     {
         await gate.WaitAsync();
         try
         {
             await using var db = await watchFactory.CreateDbContextAsync();
-            var w = await LoadAsync(db);
-            if (w.SearchUrl == "") return;
-            w.RunRequested = true;
+            var rows = await LoadAllAsync(db);
+            foreach (var row in rows.Where(r => r.SearchUrl != "")) row.RunRequested = true;
             await db.SaveChangesAsync();
         }
         finally { gate.Release(); }
@@ -183,8 +252,8 @@ public class WatchService(
         try
         {
             await using var db = await watchFactory.CreateDbContextAsync();
-            var w = await LoadAsync(db);
-            w.Topic = NewTopic();
+            var rows = await LoadAllAsync(db);
+            rows.First(r => r.Id == WatchSettings.SeekId).Topic = NewTopic();
             await db.SaveChangesAsync();
         }
         finally { gate.Release(); }
@@ -193,12 +262,12 @@ public class WatchService(
 
     public async Task SendTestAsync()
     {
-        var w = await GetAsync();
-        await ntfy.SendAsync(w.Topic, new NtfyMessage(
+        var rows = await GetAllAsync();
+        await ntfy.SendAsync(rows[0].Topic, new NtfyMessage(
             "Job Finder test", "If you can read this, notifications are working.", null, new[] { "white_check_mark" }));
     }
 
-    /// <summary>Called by the extension. Returns the scan to run, or null when nothing is due.</summary>
+    /// <summary>Called by the extension. Returns the scan to run, or null when nothing is due. SEEK is handed out before Trade Me.</summary>
     public async Task<WatchClaim?> ClaimAsync()
     {
         LastPollAt = DateTime.UtcNow;
@@ -208,17 +277,19 @@ public class WatchService(
         try
         {
             await using var db = await watchFactory.CreateDbContextAsync();
-            var w = await LoadAsync(db);
+            var rows = await LoadAllAsync(db);
+            var main = rows[0];
             var now = DateTime.UtcNow;
 
-            if (IsDue(w, now))
+            var due = rows.FirstOrDefault(w => IsDue(w, main, now));
+            if (due is not null)
             {
-                w.ClaimId = Guid.NewGuid().ToString("N");
-                w.ClaimedAt = now;
-                w.LastAttemptAt = now;
-                w.RunRequested = false;
+                due.ClaimId = Guid.NewGuid().ToString("N");
+                due.ClaimedAt = now;
+                due.LastAttemptAt = now;
+                due.RunRequested = false;
                 await db.SaveChangesAsync();
-                claim = new WatchClaim(w.ClaimId, w.SearchUrl);
+                claim = new WatchClaim(due.ClaimId, due.SearchUrl, due.Source);
             }
         }
         finally { gate.Release(); }
@@ -234,9 +305,11 @@ public class WatchService(
         try
         {
             await using var watchDb = await watchFactory.CreateDbContextAsync();
-            var w = await LoadAsync(watchDb);
-            if (w.ClaimId == "" || w.ClaimId != dto.RunId) return false;
+            var rows = await LoadAllAsync(watchDb);
+            var w = rows.FirstOrDefault(r => r.ClaimId != "" && r.ClaimId == dto.RunId);
+            if (w is null) return false;
 
+            var main = rows[0];
             var now = DateTime.UtcNow;
             var jobs = dto.Jobs ?? new List<JobDto>();
             var result = "";
@@ -250,7 +323,7 @@ public class WatchService(
             {
                 try
                 {
-                    result = await ProcessAsync(w, jobs, dto.Pages, now);
+                    result = await ProcessAsync(w, main.Topic, jobs, dto.Pages, now);
                     if (error != "") error = "The scan stopped early: " + error;
                 }
                 catch (HttpRequestException ex)
@@ -281,10 +354,10 @@ public class WatchService(
     }
 
     /// <summary>
-    /// Saves the scanned jobs, finds the new ones that match the watch's filters and notifies. It all happens in one
+    /// Saves the scanned jobs, finds the new ones that match the site's filters and notifies. It all happens in one
     /// database transaction: if ntfy can't be reached the save is undone, so those jobs still count as new next scan.
     /// </summary>
-    private async Task<string> ProcessAsync(WatchSettings w, List<JobDto> jobs, int pages, DateTime now)
+    private async Task<string> ProcessAsync(WatchSettings w, string topic, List<JobDto> jobs, int pages, DateTime now)
     {
         await using var db = await jobFactory.CreateDbContextAsync();
         await using var tx = await db.Database.BeginTransactionAsync();
@@ -293,7 +366,7 @@ public class WatchService(
         var matches = await MatchesAsync(db, w, ingest.AddedIds);
 
         var sent = "Nothing to notify.";
-        if (matches.Count > 0) sent = await NotifyAsync(w, matches);
+        if (matches.Count > 0) sent = await NotifyAsync(w, topic, matches);
 
         await tx.CommitAsync();
 
@@ -301,13 +374,16 @@ public class WatchService(
         return $"Scanned {pageText}, {ingest.Received} jobs: {ingest.Added} new, {matches.Count} matching your filters. {sent}";
     }
 
-    /// <summary>Of the newly added jobs, the ones that pass the watch's filters and contain none of the exclude words.</summary>
+    /// <summary>
+    /// Of the newly added jobs, the ones from this watch's site that pass its filters, contain none of the exclude words,
+    /// and (for Trade Me) meet the Trade Me rules.
+    /// </summary>
     private static async Task<List<Job>> MatchesAsync(JobDbContext db, WatchSettings w, IReadOnlyList<string> addedIds)
     {
         var found = new List<Job>();
         if (addedIds.Count == 0) return found;
 
-        var filter = w.ToFilter();
+        var filter = w.ToFilter();   // includes the site, so only this site's jobs can match
         foreach (var chunk in addedIds.Chunk(500))
         {
             var ids = chunk.ToList();
@@ -319,7 +395,7 @@ public class WatchService(
             StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
         return found
-            .Where(j => !IsExcluded(j, terms))
+            .Where(j => !IsExcluded(j, terms) && PassesSiteRules(j, w))
             .OrderByDescending(j => j.ListedDate)
             .ThenByDescending(j => j.ScrapedAt)
             .ToList();
@@ -332,17 +408,30 @@ public class WatchService(
         return terms.Any(t => text.Contains(t, StringComparison.OrdinalIgnoreCase));
     }
 
-    private async Task<string> NotifyAsync(WatchSettings w, IReadOnlyList<Job> matches)
+    /// <summary>The extra rules only Trade Me watches have: skip promoted listings, Quick apply only, pay listed only.</summary>
+    private static bool PassesSiteRules(Job j, WatchSettings w)
+    {
+        if (w.Source != JobSources.TradeMe) return true;
+        if (w.SkipPromoted && j.IsPromoted) return false;
+        if (w.QuickApplyOnly && !j.QuickApply) return false;
+        if (w.PayListedOnly && string.IsNullOrWhiteSpace(j.Salary)) return false;
+        return true;
+    }
+
+    private async Task<string> NotifyAsync(WatchSettings w, string topic, IReadOnlyList<Job> matches)
     {
         if (matches.Count <= MaxIndividual)
         {
-            foreach (var j in matches) await ntfy.SendAsync(w.Topic, ForJob(j));
+            foreach (var j in matches) await ntfy.SendAsync(topic, ForJob(j));
             return matches.Count == 1 ? "Sent 1 notification." : $"Sent {matches.Count} notifications.";
         }
 
-        await ntfy.SendAsync(w.Topic, Summary(w, matches));
+        await ntfy.SendAsync(topic, Summary(w, matches));
         return $"Sent one summary notification for {matches.Count} jobs.";
     }
+
+    /// <summary>Both sites share one ntfy topic, so Trade Me notifications start with "[Trade Me]" to tell them apart.</summary>
+    private static string TitlePrefix(string source) => source == JobSources.TradeMe ? "[Trade Me] " : "";
 
     private static NtfyMessage ForJob(Job j)
     {
@@ -358,7 +447,7 @@ public class WatchService(
 
         var click = j.Url.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ? j.Url : null;
         return new NtfyMessage(
-            j.Title == "" ? "New job" : j.Title,
+            TitlePrefix(j.Source) + (j.Title == "" ? "New job" : j.Title),
             lines.Count > 0 ? string.Join("\n", lines) : "New job listing",
             click,
             new[] { "briefcase" });
@@ -376,8 +465,8 @@ public class WatchService(
         var text = string.Join("\n", lines);
         if (matches.Count > SummaryLines) text += $"\n+ {matches.Count - SummaryLines} more";
 
-        // Tapping a summary opens the SEEK search so every new job is a tap away.
-        return new NtfyMessage($"{matches.Count} new jobs", text, w.SearchUrl, new[] { "briefcase" });
+        // Tapping a summary opens the search so every new job is a tap away.
+        return new NtfyMessage($"{TitlePrefix(w.Source)}{matches.Count} new jobs", text, w.SearchUrl, new[] { "briefcase" });
     }
 
     private static string Truncate(string s, int max) => s.Length <= max ? s : s[..(max - 1)].TrimEnd() + "…";

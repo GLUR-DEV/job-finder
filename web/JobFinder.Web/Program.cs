@@ -16,7 +16,7 @@ builder.Services.AddDbContextFactory<DistrictDbContext>(o =>
 builder.Services.AddHttpClient("nominatim", c =>
 {
     c.BaseAddress = new Uri("https://nominatim.openstreetmap.org/");
-    c.DefaultRequestHeaders.UserAgent.ParseAdd("JobFinder/1.6.4 (personal job search tool; https://github.com/GLUR-DEV/job-finder)");
+    c.DefaultRequestHeaders.UserAgent.ParseAdd("JobFinder/1.6.5 (personal job search tool; https://github.com/GLUR-DEV/job-finder)");
     c.DefaultRequestHeaders.AcceptLanguage.ParseAdd("en");
 });
 builder.Services.AddSingleton<SuburbBoundaries>();
@@ -50,6 +50,7 @@ using (var scope = app.Services.CreateScope())
     var watchFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<WatchDbContext>>();
     using var watchDb = watchFactory.CreateDbContext();
     watchDb.Database.EnsureCreated();
+    WatchSchema.Upgrade(watchDb);   // adds columns that came after the first watch.db, keeping existing settings
 
     // Replace any circles or "not found" results from earlier runs with official Auckland suburb outlines.
     scope.ServiceProvider.GetRequiredService<DistrictLookupService>().ApplyOfficialBoundaries();
@@ -77,8 +78,8 @@ app.MapPost("/api/watch/claim", async (WatchService watch) =>
 {
     var claim = await watch.ClaimAsync();
     return Results.Ok(claim is null
-        ? new { run = false, runId = "", url = "" }
-        : new { run = true, runId = claim.RunId, url = claim.Url });
+        ? new { run = false, runId = "", url = "", source = "" }
+        : new { run = true, runId = claim.RunId, url = claim.Url, source = claim.Source });
 }).DisableAntiforgery();
 
 app.MapPost("/api/watch/results", async (WatchResultDto dto, WatchService watch) =>

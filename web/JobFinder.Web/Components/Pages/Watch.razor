@@ -5,7 +5,7 @@
 
 <PageTitle>Watch - Job Finder</PageTitle>
 
-@if (form is null || status is null)
+@if (statuses is null || Form is null || Status is null)
 {
     <p class="result-count">Loading...</p>
 }
@@ -15,45 +15,65 @@ else
         <h2>Automatic watch</h2>
         <p class="queue-note">
             The site schedules the scans and the Chrome extension runs them, so the site must be running and Chrome open
-            with the extension installed. New jobs that match the filters below are sent to your phone through ntfy.
+            with the extension installed. SEEK and Trade Me share the on/off switch and the interval, and are scanned one
+            after the other. New jobs that match each site's filters are sent to your phone through ntfy.
         </p>
 
         <label class="check">
-            <input type="checkbox" @bind="form.Enabled" />
+            <input type="checkbox" @bind="enabled" />
             <span>Watch is on</span>
         </label>
 
         <dl class="watch-status">
+            <dt>Extension</dt>
+            <dd>@ExtensionLine</dd>
+        </dl>
+
+        <label class="field interval">
+            <span>Scan every (hours, minimum @(WatchSettings.MinIntervalMinutes / 60))</span>
+            <input type="number" min="@(WatchSettings.MinIntervalMinutes / 60)" max="@(WatchSettings.MaxIntervalMinutes / 60)" step="1"
+                   @bind="intervalHours" />
+        </label>
+    </section>
+
+    <div class="mode-toggle" role="group" aria-label="Which site's watch to set up">
+        <button type="button" class="@(IsTradeMe ? "" : "active")" aria-pressed="@(!IsTradeMe)" @onclick="() => SetSiteAsync(JobSources.Seek)">SEEK</button>
+        <button type="button" class="@(IsTradeMe ? "active" : "")" aria-pressed="@IsTradeMe" @onclick="() => SetSiteAsync(JobSources.TradeMe)">Trade Me</button>
+    </div>
+
+    <section class="panel" aria-label="@(SiteLabel) search">
+        <h2>@SiteLabel search</h2>
+
+        <dl class="watch-status">
             <dt>Search link</dt>
             <dd>
-                @if (status.SearchUrl == "")
+                @if (Status.SearchUrl == "")
                 {
-                    <span class="muted">None yet. Open a SEEK search page and click Scrape this page or Scrape all pages in the extension.</span>
+                    <span class="muted">
+                        None yet. Open a @SiteLabel search page and click Scrape this page or Scrape all pages in the extension.
+                    </span>
                 }
                 else
                 {
-                    <a href="@status.SearchUrl" target="_blank" rel="noopener noreferrer">@status.SearchUrl</a>
-                    @if (status.SearchUrlUpdatedAt is { } updatedAt)
+                    <a href="@Status.SearchUrl" target="_blank" rel="noopener noreferrer">@Status.SearchUrl</a>
+                    @if (Status.SearchUrlUpdatedAt is { } updatedAt)
                     {
                         <span class="muted"> (set @Local(updatedAt))</span>
                     }
                 }
             </dd>
 
-            <dt>Extension</dt>
-            <dd>@ExtensionLine</dd>
-
             <dt>Next scan</dt>
             <dd>@NextLine</dd>
 
             <dt>Last scan</dt>
             <dd>
-                @if (status.LastFinishedAt is { } finished)
+                @if (Status.LastFinishedAt is { } finished)
                 {
                     <span>@Local(finished)</span>
-                    @if (status.LastResult != "")
+                    @if (Status.LastResult != "")
                     {
-                        <span>. @status.LastResult</span>
+                        <span>. @Status.LastResult</span>
                     }
                 }
                 else
@@ -63,25 +83,19 @@ else
             </dd>
         </dl>
 
-        @if (status.ClaimId != "" && WatchService.ClaimActive(status, DateTime.UtcNow))
+        @if (Status.ClaimId != "" && WatchService.ClaimActive(Status, DateTime.UtcNow))
         {
-            <p class="map-status" role="status">A scan is running in Chrome now.</p>
+            <p class="map-status" role="status">A @SiteLabel scan is running in Chrome now.</p>
         }
 
-        @if (status.LastError != "")
+        @if (Status.LastError != "")
         {
-            <p class="map-status map-status-error" role="alert">@status.LastError</p>
+            <p class="map-status map-status-error" role="alert">@Status.LastError</p>
         }
-
-        <label class="field interval">
-            <span>Scan every (hours, minimum @(WatchSettings.MinIntervalMinutes / 60))</span>
-            <input type="number" min="@(WatchSettings.MinIntervalMinutes / 60)" max="@(WatchSettings.MaxIntervalMinutes / 60)" step="1"
-                   @bind="intervalHours" />
-        </label>
     </section>
 
-    <section class="panel" aria-label="Which new jobs to notify about">
-        <h2>Notify me about new jobs that match</h2>
+    <section class="panel" aria-label="Which new @(SiteLabel) jobs to notify about">
+        <h2>Notify me about new @SiteLabel jobs that match</h2>
         <p class="queue-note">
             A job counts as new when this site has not saved it before. Only new jobs that pass these filters are sent to your phone.
         </p>
@@ -89,28 +103,44 @@ else
         <div class="filters filters-plain">
             <label class="field field-wide">
                 <span>Keyword</span>
-                <input type="search" placeholder="Title, company or description" @bind="form.Keyword" />
+                <input type="search" placeholder="Title, company or description" @bind="Form.Keyword" />
             </label>
 
             <label class="field field-wide">
                 <span>Leave out jobs containing (separate with commas)</span>
-                <textarea rows="2" placeholder="For example: senior, manager, nurse" @bind="form.ExcludeKeywords"></textarea>
+                <textarea rows="2" placeholder="For example: senior, manager, nurse" @bind="Form.ExcludeKeywords"></textarea>
             </label>
 
-            <label class="field">
-                <span>Location</span>
-                <select @bind="form.Location">
-                    <option value="">All locations</option>
-                    @foreach (var l in locations)
-                    {
-                        <option value="@l">@l</option>
-                    }
-                </select>
-            </label>
+            @if (IsTradeMe)
+            {
+                <label class="field">
+                    <span>District</span>
+                    <select @bind="Form.District">
+                        <option value="">All districts</option>
+                        @foreach (var d in districts)
+                        {
+                            <option value="@d">@d</option>
+                        }
+                    </select>
+                </label>
+            }
+            else
+            {
+                <label class="field">
+                    <span>Location</span>
+                    <select @bind="Form.Location">
+                        <option value="">All locations</option>
+                        @foreach (var l in locations)
+                        {
+                            <option value="@l">@l</option>
+                        }
+                    </select>
+                </label>
+            }
 
             <label class="field">
                 <span>Work type</span>
-                <select @bind="form.WorkType">
+                <select @bind="Form.WorkType">
                     <option value="">All work types</option>
                     @foreach (var w in workTypes)
                     {
@@ -121,7 +151,7 @@ else
 
             <label class="field">
                 <span>Classification</span>
-                <select @bind="form.Classification" @bind:after="OnClassificationChangedAsync">
+                <select @bind="Form.Classification" @bind:after="OnClassificationChangedAsync">
                     <option value="">All classifications</option>
                     @foreach (var c in classifications)
                     {
@@ -132,7 +162,7 @@ else
 
             <label class="field">
                 <span>Sub-classification</span>
-                <select @bind="form.SubClass">
+                <select @bind="Form.SubClass">
                     <option value="">All sub-classifications</option>
                     @foreach (var s in subClasses)
                     {
@@ -143,7 +173,7 @@ else
 
             <label class="field">
                 <span>Listed</span>
-                <select @bind="form.ListedDays">
+                <select @bind="Form.ListedDays">
                     <option value="0">Any time</option>
                     <option value="1">Last 24 hours</option>
                     <option value="3">Last 3 days</option>
@@ -153,30 +183,57 @@ else
                 </select>
             </label>
 
-            <label class="field">
-                <span>Applicant strength</span>
-                <select @bind="form.Applicant">
-                    <option value="">Any</option>
-                    <option value="strong">Strong applicant</option>
-                    <option value="very">Very strong applicant</option>
-                    <option value="both">Strong or very strong</option>
-                </select>
-            </label>
+            @* Trade Me jobs have no applicant strength. *@
+            @if (!IsTradeMe)
+            {
+                <label class="field">
+                    <span>Applicant strength</span>
+                    <select @bind="Form.Applicant">
+                        <option value="">Any</option>
+                        <option value="strong">Strong applicant</option>
+                        <option value="very">Very strong applicant</option>
+                        <option value="both">Strong or very strong</option>
+                    </select>
+                </label>
+            }
         </div>
+
+        @if (IsTradeMe)
+        {
+            <div class="check-list">
+                <label class="check">
+                    <input type="checkbox" @bind="Form.SkipPromoted" />
+                    <span>Skip promoted listings</span>
+                </label>
+                <label class="check">
+                    <input type="checkbox" @bind="Form.QuickApplyOnly" />
+                    <span>Only jobs with Quick apply</span>
+                </label>
+                <label class="check">
+                    <input type="checkbox" @bind="Form.PayListedOnly" />
+                    <span>Only jobs with pay listed</span>
+                </label>
+            </div>
+        }
 
         <p class="queue-note">
             Up to @WatchService.MaxIndividual matching jobs are sent as separate notifications. More than that are sent as one summary.
+            @if (IsTradeMe)
+            {
+                <span>Trade Me notifications start with "[Trade Me]".</span>
+            }
         </p>
     </section>
 
     <section class="panel" aria-label="Phone notifications">
         <h2>Phone notifications (ntfy)</h2>
         <p>
-            Install the ntfy app, tap <strong>+</strong>, keep the server as <code>ntfy.sh</code> and subscribe to this topic:
+            SEEK and Trade Me notifications both go to this one topic. Install the ntfy app, tap <strong>+</strong>,
+            keep the server as <code>ntfy.sh</code> and subscribe to:
         </p>
-        <p><code class="topic">@status.Topic</code></p>
+        <p><code class="topic">@Shared.Topic</code></p>
         <p class="queue-note">
-            Or open <a href="@NtfyClient.SubscribeUrl(status.Topic)" target="_blank" rel="noopener noreferrer">@NtfyClient.SubscribeUrl(status.Topic)</a>.
+            Or open <a href="@NtfyClient.SubscribeUrl(Shared.Topic)" target="_blank" rel="noopener noreferrer">@NtfyClient.SubscribeUrl(Shared.Topic)</a>.
             The topic is a random name on a public server, so anyone who knows it can read your notifications. Keep it private.
         </p>
 
@@ -192,7 +249,7 @@ else
 
     <div class="actions">
         <button type="button" class="primary" @onclick="SaveAsync" disabled="@busy">Save</button>
-        <button type="button" @onclick="ScanNowAsync" disabled="@(busy || status.SearchUrl == "" || !status.Enabled)">Scan now</button>
+        <button type="button" @onclick="ScanNowAsync" disabled="@(busy || !Shared.Enabled || statuses.All(s => s.SearchUrl == ""))">Scan now</button>
         @if (saveMessage != "")
         {
             <span class="queue-note" role="status">@saveMessage</span>
@@ -201,20 +258,34 @@ else
 }
 
 @code {
-    private WatchSettings? status;
-    private WatchSettings? form;
+    /// <summary>The stored state of both watches: SEEK first, then Trade Me. The SEEK row holds the shared settings.</summary>
+    private List<WatchSettings>? statuses;
+
+    /// <summary>Editable copies of each site's row, so changes being made aren't overwritten by a refresh.</summary>
+    private readonly Dictionary<string, WatchSettings> forms = new();
+
+    private bool enabled;
     private int intervalHours = 4;
+    private string site = JobSources.Seek;
     private bool busy;
     private string saveMessage = "", ntfyMessage = "";
 
-    private List<string> locations = new(), workTypes = new(), classifications = new(), subClasses = new();
+    private List<string> locations = new(), districts = new(), workTypes = new(), classifications = new(), subClasses = new();
     private Timer? timer;
+
+    private bool IsTradeMe => site == JobSources.TradeMe;
+    private string SiteLabel => JobSources.Label(site);
+    private WatchSettings? Form => forms.GetValueOrDefault(site);
+    private WatchSettings? Status => statuses?.FirstOrDefault(s => s.Source == site);
+    private WatchSettings Shared => statuses![0];
 
     protected override async Task OnInitializedAsync()
     {
-        status = await Service.GetAsync();
-        form = status.Copy();
-        intervalHours = Math.Max(WatchSettings.MinIntervalMinutes / 60, form.IntervalMinutes / 60);
+        statuses = await Service.GetAllAsync();
+        foreach (var row in statuses) forms[row.Source] = row.Copy();
+
+        enabled = Shared.Enabled;
+        intervalHours = Math.Max(WatchSettings.MinIntervalMinutes / 60, Shared.IntervalMinutes / 60);
 
         await LoadOptionsAsync();
 
@@ -232,7 +303,7 @@ else
     /// <summary>Only the status refreshes, so changes being made to the settings aren't overwritten.</summary>
     private void OnWatchChanged() => _ = InvokeAsync(async () =>
     {
-        status = await Service.GetAsync();
+        statuses = await Service.GetAllAsync();
         StateHasChanged();
     });
 
@@ -256,11 +327,12 @@ else
     {
         get
         {
-            if (status is null || !status.Enabled) return "The watch is off.";
-            if (status.SearchUrl == "") return "Waiting for a search link.";
-            if (WatchService.ClaimActive(status, DateTime.UtcNow)) return "Scanning now.";
-            if (status.RunRequested) return "Starting within a minute.";
-            if (WatchService.NextDue(status) is not { } due) return "Within a minute, as soon as the extension checks in.";
+            var w = Status;
+            if (w is null || !Shared.Enabled) return "The watch is off.";
+            if (w.SearchUrl == "") return "Waiting for a search link.";
+            if (WatchService.ClaimActive(w, DateTime.UtcNow)) return "Scanning now.";
+            if (w.RunRequested) return "Starting within a minute.";
+            if (WatchService.NextDue(w, Shared) is not { } due) return "Within a minute, as soon as the extension checks in.";
             return DateTime.UtcNow >= due
                 ? "Due now. It starts when the extension next checks in."
                 : Local(due);
@@ -270,19 +342,27 @@ else
     private static Task<List<string>> DistinctAsync(IQueryable<string> values) =>
         values.Where(s => s != "").Distinct().OrderBy(s => s).ToListAsync();
 
+    /// <summary>Loads the drop-down lists from the jobs saved for the site being shown.</summary>
     private async Task LoadOptionsAsync()
     {
+        var form = Form!;
         await using var db = await DbFactory.CreateDbContextAsync();
-        locations = await DistinctAsync(db.Jobs.Select(j => j.Location));
-        workTypes = await DistinctAsync(db.Jobs.Select(j => j.WorkType));
-        classifications = await DistinctAsync(db.Jobs.Select(j => j.Classification));
 
-        var cls = form!.Classification;
+        var src = site;
+        var scoped = db.Jobs.Where(j => j.Source == src);
+
+        locations = await DistinctAsync(scoped.Select(j => j.Location));
+        districts = await DistinctAsync(scoped.Select(j => j.District));
+        workTypes = await DistinctAsync(scoped.Select(j => j.WorkType));
+        classifications = await DistinctAsync(scoped.Select(j => j.Classification));
+
+        var cls = form.Classification;
         subClasses = await DistinctAsync(
-            db.Jobs.Where(j => cls == "" || j.Classification == cls).Select(j => j.SubClass));
+            scoped.Where(j => cls == "" || j.Classification == cls).Select(j => j.SubClass));
 
         // Keep a saved choice selectable even if no saved job has it right now.
         KeepSelected(locations, form.Location);
+        KeepSelected(districts, form.District);
         KeepSelected(workTypes, form.WorkType);
         KeepSelected(classifications, form.Classification);
         KeepSelected(subClasses, form.SubClass);
@@ -295,15 +375,22 @@ else
         options.Sort(StringComparer.Ordinal);
     }
 
+    private async Task SetSiteAsync(string newSite)
+    {
+        if (site == newSite) return;
+        site = newSite;
+        saveMessage = "";
+        await LoadOptionsAsync();
+    }
+
     private async Task OnClassificationChangedAsync()
     {
-        form!.SubClass = "";
+        Form!.SubClass = "";
         await LoadOptionsAsync();
     }
 
     private async Task SaveAsync()
     {
-        if (form is null) return;
         if (intervalHours * 60 < WatchSettings.MinIntervalMinutes)
         {
             saveMessage = $"The shortest interval is {WatchSettings.MinIntervalMinutes / 60} hours.";
@@ -311,9 +398,8 @@ else
         }
 
         busy = true;
-        form.IntervalMinutes = intervalHours * 60;
-        await Service.SaveAsync(form);
-        status = await Service.GetAsync();
+        await Service.SaveAsync(enabled, intervalHours * 60, forms[JobSources.Seek], forms[JobSources.TradeMe]);
+        statuses = await Service.GetAllAsync();
         saveMessage = "Saved.";
         busy = false;
     }
@@ -323,7 +409,7 @@ else
         busy = true;
         await SaveAsync();
         await Service.RequestRunAsync();
-        saveMessage = "Saved. A scan will start within a minute.";
+        saveMessage = "Saved. Scans will start within a minute or two, SEEK first and then Trade Me.";
         busy = false;
     }
 
@@ -347,7 +433,7 @@ else
     {
         busy = true;
         await Service.RegenerateTopicAsync();
-        status = await Service.GetAsync();
+        statuses = await Service.GetAllAsync();
         ntfyMessage = "New topic created. Subscribe to it in the ntfy app. The old one no longer receives anything.";
         busy = false;
     }

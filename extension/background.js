@@ -1,6 +1,6 @@
-// Runs the site's automatic watch. The site decides when a scan is due and keeps all the settings.
-// Once a minute this asks the site "is a scan due?". If so it scrapes every page of the saved SEEK
-// search in a background tab and hands the jobs back. The site saves them and sends the notifications.
+// Runs the site's automatic watch for SEEK and Trade Me. The site decides when a scan is due, which site to scan
+// and keeps all the settings. Once a minute this asks the site "is a scan due?". If so it scrapes every page of the
+// saved search it is given in a background tab and hands the jobs back. The site saves them and sends the notifications.
 importScripts("common.js");
 
 const POLL_ALARM = "watch-poll";
@@ -82,7 +82,7 @@ async function scanAllPages(startUrl) {
       const { jobs: found, pager } = await scrapeWhenReady(tab);
 
       if (!found.length) {
-        if (i === 0) error = "No job cards were found on the first page. SEEK may be showing a sign-in or verification page.";
+        if (i === 0) error = "No job cards were found on the first page. The site may be showing a sign-in or verification page.";
         break;
       }
 

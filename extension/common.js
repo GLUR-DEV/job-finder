@@ -5,7 +5,7 @@ const SEEK_URL = /^https:\/\/([^/]+\.)?seek\.(com(\.au)?|co\.nz)\//;
 const TRADEME_URL = /^https:\/\/([^/]+\.)?trademe\.co\.nz\//;
 
 const MAX_PAGES = 25;
-const PAGE_DELAY_MS = 1000;      // pause between pages to be polite to SEEK
+const PAGE_DELAY_MS = 1000;      // pause between pages to be polite to SEEK and Trade Me
 const CARD_WAIT_MS = 8000;       // how long to wait for job cards to appear on a page
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -62,11 +62,20 @@ async function scrapeWhenReady(tab) {
   }
 }
 
-// Tells the site which SEEK search the automatic watch should rescan.
-// Quietly does nothing if the site isn't running; the next scrape will try again.
+// Whether a link is a SEEK or Trade Me search results page (not a single job's own page).
+function isSearchPage(url) {
+  if (!url) return false;
+  const path = new URL(url).pathname;
+  if (SEEK_URL.test(url)) return !path.startsWith("/job/");
+  if (TRADEME_URL.test(url)) return path.startsWith("/a/jobs") && !path.includes("/listing/");
+  return false;
+}
+
+// Tells the site which SEEK or Trade Me search the automatic watch should rescan. The site works out which
+// site the link is for. Quietly does nothing if the site isn't running; the next scrape will try again.
 async function reportSearchUrl(url) {
   try {
-    if (!url || !SEEK_URL.test(url) || new URL(url).pathname.startsWith("/job/")) return;
+    if (!isSearchPage(url)) return;
     await fetch(`${API_BASE}/api/watch/url`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
