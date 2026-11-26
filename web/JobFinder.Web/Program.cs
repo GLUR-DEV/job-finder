@@ -16,10 +16,11 @@ builder.Services.AddDbContextFactory<DistrictDbContext>(o =>
 builder.Services.AddHttpClient("nominatim", c =>
 {
     c.BaseAddress = new Uri("https://nominatim.openstreetmap.org/");
-    c.DefaultRequestHeaders.UserAgent.ParseAdd("JobFinder/1.4.1 (personal job search tool; https://github.com/GLUR-DEV/job-finder)");
+    c.DefaultRequestHeaders.UserAgent.ParseAdd("JobFinder/1.6.3 (personal job search tool; https://github.com/GLUR-DEV/job-finder)");
     c.DefaultRequestHeaders.AcceptLanguage.ParseAdd("en");
 });
 builder.Services.AddSingleton<SuburbBoundaries>();
+builder.Services.AddSingleton<TradeMeBoundaries>();
 builder.Services.AddSingleton<DistrictLookupService>();
 
 // The automatic watch keeps its settings in its own database (watch.db) and notifies through the public ntfy.sh server.

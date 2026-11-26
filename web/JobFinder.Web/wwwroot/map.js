@@ -180,6 +180,16 @@ window.jobMap = (() => {
             if (bounds.isValid()) map.fitBounds(bounds.pad(0.05));
         },
 
+        // Removes every district and count, for switching between the SEEK and Trade Me maps.
+        clear() {
+            for (const d of districts.values()) d.layer.remove();
+            districts.clear();
+            counts = {};
+            max = 0;
+            bins = [];
+            renderLegend();
+        },
+
         dispose() {
             if (map) { map.remove(); map = null; }
             districts.clear();

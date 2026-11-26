@@ -12,6 +12,7 @@
 
   <ItemGroup>
     <Content Include="Data\auckland-suburbs.geojson" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Data\trademe-districts.geojson" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

@@ -33,7 +33,6 @@ public class SuburbBoundaries
     private static readonly Dictionary<string, string> AliasOverrides = new()
     {
         ["newton"] = "Eden Terrace",
-        ["Auckland City"] = "Auckland Central",
     };
 
     /// <summary>

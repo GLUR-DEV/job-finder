@@ -40,9 +40,10 @@ public static class JobQueries
             }
         }
 
-        var src = f.Source; var loc = f.Location; var wt = f.WorkType; var cls = f.Classification; var sub = f.SubClass;
+        var src = f.Source; var loc = f.Location; var dist = f.District; var wt = f.WorkType; var cls = f.Classification; var sub = f.SubClass;
         if (src != "") q = q.Where(j => j.Source == src);
         if (loc != "") q = q.Where(j => j.Location == loc);
+        if (dist != "") q = q.Where(j => j.District == dist);
         if (wt != "") q = q.Where(j => j.WorkType == wt);
         if (cls != "") q = q.Where(j => j.Classification == cls);
         if (sub != "") q = q.Where(j => j.SubClass == sub);

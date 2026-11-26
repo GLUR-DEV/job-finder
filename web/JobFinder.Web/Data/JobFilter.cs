@@ -16,13 +16,18 @@ public class JobFilter
 
     public string Keyword { get; set; } = "";
 
-    /// <summary>"" (any site), "seek" or "trademe". See <see cref="JobSources"/>.</summary>
+    /// <summary>"seek" or "trademe" (see <see cref="JobSources"/>), or "" for either. The Jobs and Map pages always pick one.</summary>
     public string Source { get; set; } = "";
 
     /// <summary>Trade Me jobs have no applicant strength, so the Applicant filter doesn't apply when only Trade Me is shown.</summary>
     public bool ApplicantApplies => Source != JobSources.TradeMe;
 
+    /// <summary>SEEK only: the suburb text SEEK gave the job, for example "Penrose, Auckland".</summary>
     public string Location { get; set; } = "";
+
+    /// <summary>Trade Me only: the Trade Me district, for example "North Shore City". Stands in for <see cref="Location"/>.</summary>
+    public string District { get; set; } = "";
+
     public string WorkType { get; set; } = "";
     public string Classification { get; set; } = "";
     public string SubClass { get; set; } = "";
@@ -38,27 +43,29 @@ public class JobFilter
     public string Hours { get; set; } = "";
 
     public bool HasJobFilters =>
-        Keyword.Trim() != "" || Source != "" || Location != "" || WorkType != "" || Classification != "" ||
+        Keyword.Trim() != "" || Location != "" || District != "" || WorkType != "" || Classification != "" ||
         SubClass != "" || ListedDays != 0 || Applicant != "";
 
     public bool HasFavouriteFilters => Contact != "" || Hours != "";
 
     public bool Has(bool includeFavourite) => HasJobFilters || (includeFavourite && HasFavouriteFilters);
 
+    /// <summary>Resets every filter except <see cref="Source"/>, which is the site being viewed rather than a filter.</summary>
     public void Clear()
     {
-        Keyword = Source = Location = WorkType = Classification = SubClass = Applicant = Contact = Hours = "";
+        Keyword = Location = District = WorkType = Classification = SubClass = Applicant = Contact = Hours = "";
         ListedDays = 0;
     }
 
     /// <summary>Fills the filter from query string values, ignoring anything it doesn't recognise.</summary>
     public void Load(string? keyword, string? location, string? workType, string? classification,
                      string? subClass, int? listed, string? applicant, string? contact, string? hours,
-                     string? source = null)
+                     string? source = null, string? district = null)
     {
         Keyword = keyword?.Trim() ?? "";
         Source = source is not null && SourceChoices.Contains(source) ? source : "";
         Location = location ?? "";
+        District = district ?? "";
         WorkType = workType ?? "";
         Classification = classification ?? "";
         SubClass = subClass ?? "";
@@ -70,9 +77,9 @@ public class JobFilter
 
     /// <summary>
     /// Builds a query string ("?keyword=...&amp;location=...") for linking to another page with the same filters.
-    /// Pass <paramref name="location"/> to replace the location.
+    /// Pass <paramref name="location"/> or <paramref name="district"/> to replace that part of the filter.
     /// </summary>
-    public string ToQueryString(bool includeFavourite, string? location = null)
+    public string ToQueryString(bool includeFavourite, string? location = null, string? district = null)
     {
         var pairs = new List<string>();
 
@@ -84,6 +91,7 @@ public class JobFilter
         Add("keyword", Keyword.Trim());
         Add("source", Source);
         Add("location", location ?? Location);
+        Add("district", district ?? District);
         Add("workType", WorkType);
         Add("classification", Classification);
         Add("subClass", SubClass);

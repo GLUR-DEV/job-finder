@@ -4,6 +4,11 @@
 
 <PageTitle>Job Finder</PageTitle>
 
+<div class="mode-toggle" role="group" aria-label="Which site's jobs to show">
+    <button type="button" class="@(IsTradeMe ? "" : "active")" aria-pressed="@(!IsTradeMe)" @onclick="() => SetSourceAsync(JobSources.Seek)">SEEK</button>
+    <button type="button" class="@(IsTradeMe ? "active" : "")" aria-pressed="@IsTradeMe" @onclick="() => SetSourceAsync(JobSources.TradeMe)">Trade Me</button>
+</div>
+
 <section class="filters" aria-label="Job filters">
     <label class="field field-wide">
         <span>Keyword</span>
@@ -11,25 +16,33 @@
                @bind="Filter.Keyword" @bind:event="oninput" @bind:after="ApplyFiltersAsync" />
     </label>
 
-    <label class="field">
-        <span>Site</span>
-        <select @bind="Filter.Source" @bind:after="OnSourceChangedAsync">
-            <option value="">Any</option>
-            <option value="@JobSources.Seek">SEEK</option>
-            <option value="@JobSources.TradeMe">Trade Me</option>
-        </select>
-    </label>
-
-    <label class="field">
-        <span>Location</span>
-        <select @bind="Filter.Location" @bind:after="ApplyFiltersAsync">
-            <option value="">All locations</option>
-            @foreach (var l in locations)
-            {
-                <option value="@l">@l</option>
-            }
-        </select>
-    </label>
+    @* Trade Me only places a job in a large district, so it gets a District filter instead of Location. *@
+    @if (IsTradeMe)
+    {
+        <label class="field">
+            <span>District</span>
+            <select @bind="Filter.District" @bind:after="ApplyFiltersAsync">
+                <option value="">All districts</option>
+                @foreach (var d in districts)
+                {
+                    <option value="@d">@d</option>
+                }
+            </select>
+        </label>
+    }
+    else
+    {
+        <label class="field">
+            <span>Location</span>
+            <select @bind="Filter.Location" @bind:after="ApplyFiltersAsync">
+                <option value="">All locations</option>
+                @foreach (var l in locations)
+                {
+                    <option value="@l">@l</option>
+                }
+            </select>
+        </label>
+    }
 
     <label class="field">
         <span>Work type</span>
@@ -76,7 +89,7 @@
         </select>
     </label>
 
-    @* Trade Me jobs have no applicant strength, so the filter is hidden while only Trade Me is shown. *@
+    @* Trade Me jobs have no applicant strength, so the filter is hidden on the Trade Me side. *@
     @if (Filter.ApplicantApplies)
     {
         <label class="field">
@@ -104,6 +117,8 @@
     }
 </p>
 
+@if (!IsTradeMe)
+{
 <section class="queue-bar" aria-label="Detail scrape queue">
     <button type="button" class="primary" @onclick="QueueAsync" disabled="@(!CanQueue)">Queue details scrape</button>
     <span class="queue-note">@QueueNote</span>
@@ -116,6 +131,7 @@
 @if (queueMessage != "")
 {
     <p class="queue-message" role="status">@queueMessage</p>
+}
 }
 
 @if (!loading && total == 0)
@@ -170,12 +186,14 @@
     private string queueMessage = "";
 
     private List<Job> jobs = new();
-    private List<string> locations = new(), workTypes = new(), classifications = new(), subClasses = new();
+    private List<string> locations = new(), districts = new(), workTypes = new(), classifications = new(), subClasses = new();
     private Job? selected;
 
     private int TotalPages => Math.Max(1, (int)Math.Ceiling(total / (double)PageSize));
 
     private bool HasFilters => Filter.HasJobFilters;
+
+    private bool IsTradeMe => Filter.Source == JobSources.TradeMe;
 
     // Only SEEK jobs can be queued: the extension reads details from SEEK job pages only.
     private bool CanQueue => !loading && queueTotal > 0 && queueTotal <= MaxQueue;
@@ -196,6 +214,9 @@
     {
         if (!ApplyQuery()) return;
 
+        // The page always shows one site. Links without a site (old bookmarks) open the SEEK side.
+        if (Filter.Source == "") Filter.Source = JobSources.Seek;
+
         pageNumber = 1;
         queueMessage = "";
         await LoadOptionsAsync();
@@ -210,11 +231,15 @@
         await using var db = await DbFactory.CreateDbContextAsync();
 
         // The lists only offer values the chosen site has. Trade Me categories are merged into SEEK's names
-        // (see TradeMeTaxonomy), so with "Any" a shared category appears once and Trade Me-only ones are added.
+        // (see TradeMeTaxonomy), so a shared category has the same name on both sides.
         var src = Filter.Source;
         var scoped = db.Jobs.Where(j => src == "" || j.Source == src);
 
         locations = await DistinctAsync(scoped.Select(j => j.Location));
+        districts = await DistinctAsync(scoped.Select(j => j.District));
+
+        // Keep a district that came in through a link selectable even if it has no jobs right now.
+        if (Filter.District != "" && !districts.Contains(Filter.District)) districts.Add(Filter.District);
         workTypes = await DistinctAsync(scoped.Select(j => j.WorkType));
         classifications = await DistinctAsync(scoped.Select(j => j.Classification));
 
@@ -261,8 +286,14 @@
         await LoadJobsAsync();
     }
 
-    private async Task OnSourceChangedAsync()
+    /// <summary>Switches between the SEEK and Trade Me sides. Each side has its own filters, so the other side's are dropped.</summary>
+    private async Task SetSourceAsync(string source)
     {
+        if (Filter.Source == source) return;
+        Filter.Source = source;
+
+        Filter.Location = "";
+        Filter.District = "";
         if (!Filter.ApplicantApplies) Filter.Applicant = "";   // Trade Me jobs have no applicant strength
 
         await LoadOptionsAsync();

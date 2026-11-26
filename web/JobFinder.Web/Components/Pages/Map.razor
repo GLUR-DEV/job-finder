@@ -4,14 +4,22 @@
 @inject IDbContextFactory<JobDbContext> DbFactory
 @inject IDbContextFactory<DistrictDbContext> DistrictDbFactory
 @inject DistrictLookupService Lookup
+@inject TradeMeBoundaries TradeMeShapes
 @inject NavigationManager Nav
 @inject IJSRuntime JS
 
 <PageTitle>Map - Job Finder</PageTitle>
 
-<div class="mode-toggle" role="group" aria-label="Which jobs to show on the map">
-    <button type="button" class="@(favourites ? "" : "active")" aria-pressed="@(!favourites)" @onclick="() => SetModeAsync(false)">Jobs</button>
-    <button type="button" class="@(favourites ? "active" : "")" aria-pressed="@favourites" @onclick="() => SetModeAsync(true)">Favourites</button>
+<div class="mode-toggles">
+    <div class="mode-toggle" role="group" aria-label="Which site's map to show">
+        <button type="button" class="@(tradeMe ? "" : "active")" aria-pressed="@(!tradeMe)" @onclick="() => SetSiteAsync(false)">SEEK map</button>
+        <button type="button" class="@(tradeMe ? "active" : "")" aria-pressed="@tradeMe" @onclick="() => SetSiteAsync(true)">Trade Me map</button>
+    </div>
+
+    <div class="mode-toggle" role="group" aria-label="Which jobs to show on the map">
+        <button type="button" class="@(favourites ? "" : "active")" aria-pressed="@(!favourites)" @onclick="() => SetModeAsync(false)">Jobs</button>
+        <button type="button" class="@(favourites ? "active" : "")" aria-pressed="@favourites" @onclick="() => SetModeAsync(true)">Favourites</button>
+    </div>
 </div>
 
 <section class="filters" aria-label="Map filters">
@@ -21,16 +29,32 @@
                @bind="filter.Keyword" @bind:event="oninput" @bind:after="ApplyFiltersAsync" />
     </label>
 
-    <label class="field">
-        <span>Location</span>
-        <select @bind="filter.Location" @bind:after="ApplyFiltersAsync">
-            <option value="">All locations</option>
-            @foreach (var l in locations)
-            {
-                <option value="@l">@l</option>
-            }
-        </select>
-    </label>
+    @if (tradeMe)
+    {
+        <label class="field">
+            <span>District</span>
+            <select @bind="filter.District" @bind:after="ApplyFiltersAsync">
+                <option value="">All districts</option>
+                @foreach (var d in districts)
+                {
+                    <option value="@d">@d</option>
+                }
+            </select>
+        </label>
+    }
+    else
+    {
+        <label class="field">
+            <span>Location</span>
+            <select @bind="filter.Location" @bind:after="ApplyFiltersAsync">
+                <option value="">All locations</option>
+                @foreach (var l in locations)
+                {
+                    <option value="@l">@l</option>
+                }
+            </select>
+        </label>
+    }
 
     <label class="field">
         <span>Work type</span>
@@ -77,15 +101,19 @@
         </select>
     </label>
 
-    <label class="field">
-        <span>Applicant strength</span>
-        <select @bind="filter.Applicant" @bind:after="ApplyFiltersAsync">
-            <option value="">Any</option>
-            <option value="strong">Strong applicant</option>
-            <option value="very">Very strong applicant</option>
-            <option value="both">Strong or very strong</option>
-        </select>
-    </label>
+    @* Trade Me jobs have no applicant strength. *@
+    @if (!tradeMe)
+    {
+        <label class="field">
+            <span>Applicant strength</span>
+            <select @bind="filter.Applicant" @bind:after="ApplyFiltersAsync">
+                <option value="">Any</option>
+                <option value="strong">Strong applicant</option>
+                <option value="very">Very strong applicant</option>
+                <option value="both">Strong or very strong</option>
+            </select>
+        </label>
+    }
 
     @if (favourites)
     {
@@ -120,11 +148,11 @@
     }
     else
     {
-        <text>@total @(total == 1 ? "job" : "jobs") on the map@(HasFilters ? " match your filters" : favourites ? " (favourites)" : ""). Click a district to see them.</text>
+        <text>@total @(total == 1 ? "job" : "jobs") on the map@(HasFilters ? " match your filters" : favourites ? " (favourites)" : ""). Click a @(tradeMe ? "region" : "district") to see them.</text>
     }
 </p>
 
-@if (!loading && excluded > 0)
+@if (!tradeMe && !loading && excluded > 0)
 {
     <p class="map-status" role="status">
         @excluded @(excluded == 1 ? "job has" : "jobs have") just "@SuburbBoundaries.RegionName" as the location, so
@@ -138,13 +166,13 @@
     <p class="map-status map-status-error" role="alert">@mapError</p>
 }
 
-@if (Lookup.Running)
+@if (!tradeMe && Lookup.Running)
 {
     <p class="map-status" role="status">
         Finding district outlines on OpenStreetMap: @Lookup.Done of @Lookup.Total. This runs about one a second, so the first time it can take a while.
     </p>
 }
-else if (Lookup.LastError != "")
+else if (!tradeMe && Lookup.LastError != "")
 {
     <p class="map-status map-status-error" role="alert">
         Outline lookup stopped early: @Lookup.LastError
@@ -152,7 +180,7 @@ else if (Lookup.LastError != "")
     </p>
 }
 
-@if (!Lookup.Running && unmapped.Count > 0)
+@if ((tradeMe || !Lookup.Running) && unmapped.Count > 0)
 {
     <details class="map-status">
         <summary>@unmapped.Sum(u => u.Jobs) @(unmapped.Sum(u => u.Jobs) == 1 ? "job is" : "jobs are") in @unmapped.Count @(unmapped.Count == 1 ? "location" : "locations") not drawn on the map</summary>
@@ -162,20 +190,23 @@ else if (Lookup.LastError != "")
                 <li>@name (@jobs)</li>
             }
         </ul>
-        <button type="button" class="link-button" @onclick="() => Lookup.Start(retryNotFound: true)">Look these up again</button>
+        @if (!tradeMe)
+        {
+            <button type="button" class="link-button" @onclick="() => Lookup.Start(retryNotFound: true)">Look these up again</button>
+        }
     </details>
 }
 
-<div class="map-canvas" @ref="mapEl" aria-label="Map of job districts"></div>
+<div class="map-canvas" @ref="mapEl" aria-label="@(tradeMe ? "Map of Trade Me job districts" : "Map of job districts")"></div>
 
 @code {
-    private readonly JobFilter filter = new();
+    private readonly JobFilter filter = new() { Source = JobSources.Seek };
 
-    private bool favourites, loading = true, mapReady, needsFit, disposed;
+    private bool favourites, tradeMe, loading = true, mapReady, needsFit, disposed;
     private int total, excluded;
     private string mapError = "";
 
-    private List<string> locations = new(), workTypes = new(), classifications = new(), subClasses = new();
+    private List<string> locations = new(), districts = new(), workTypes = new(), classifications = new(), subClasses = new();
 
     /// <summary>Jobs per location for the current filters.</summary>
     private Dictionary<string, int> counts = new();
@@ -241,13 +272,19 @@ else if (Lookup.LastError != "")
     private async Task LoadOptionsAsync()
     {
         await using var db = await DbFactory.CreateDbContextAsync();
-        locations = await DistinctAsync(db.Jobs.Select(j => j.Location));
-        workTypes = await DistinctAsync(db.Jobs.Select(j => j.WorkType));
-        classifications = await DistinctAsync(db.Jobs.Select(j => j.Classification));
+
+        // Each map only offers values its own site has.
+        var src = filter.Source;
+        var scoped = db.Jobs.Where(j => j.Source == src);
+
+        locations = await DistinctAsync(scoped.Select(j => j.Location));
+        districts = await DistinctAsync(scoped.Select(j => j.District));
+        workTypes = await DistinctAsync(scoped.Select(j => j.WorkType));
+        classifications = await DistinctAsync(scoped.Select(j => j.Classification));
 
         var cls = filter.Classification;
         subClasses = await DistinctAsync(
-            db.Jobs.Where(j => cls == "" || j.Classification == cls).Select(j => j.SubClass));
+            scoped.Where(j => cls == "" || j.Classification == cls).Select(j => j.SubClass));
     }
 
     /// <summary>Counts the jobs matching the filters in each location.</summary>
@@ -256,7 +293,16 @@ else if (Lookup.LastError != "")
         loading = true;
         await using var db = await DbFactory.CreateDbContextAsync();
 
-        var q = JobQueries.Apply(db.Jobs.AsNoTracking(), filter, favourites).Where(j => j.Location != "");
+        var all = JobQueries.Apply(db.Jobs.AsNoTracking(), filter, favourites);
+
+        if (tradeMe)
+        {
+            await LoadTradeMeCountsAsync(all);
+            loading = false;
+            return;
+        }
+
+        var q = all.Where(j => j.Location != "");
 
         if (JobQueries.HoursActive(filter, favourites))
         {
@@ -285,13 +331,67 @@ else if (Lookup.LastError != "")
         loading = false;
     }
 
-    private void UpdateUnmapped() =>
+    /// <summary>
+    /// Counts the Trade Me jobs matching the filters in each district outline. Jobs with no district, or in a district
+    /// that has no outline (another region, say), are listed as not drawn.
+    /// </summary>
+    private async Task LoadTradeMeCountsAsync(IQueryable<Job> all)
+    {
+        List<(string Region, string District, int Jobs)> rows;
+
+        if (JobQueries.HoursActive(filter, favourites))
+        {
+            // Work hours are read from the ad text, which the database can't do.
+            var list = await all.Select(j => new { j.Region, j.District, Description = j.Detail!.Description }).ToListAsync();
+            rows = list
+                .Where(r => JobQueries.HoursMatch(r.Description, filter))
+                .GroupBy(r => (r.Region, r.District))
+                .Select(g => (g.Key.Region, g.Key.District, g.Count()))
+                .ToList();
+        }
+        else
+        {
+            var grouped = await all
+                .GroupBy(j => new { j.Region, j.District })
+                .Select(g => new { g.Key.Region, g.Key.District, Jobs = g.Count() })
+                .ToListAsync();
+            rows = grouped.Select(x => (x.Region, x.District, x.Jobs)).ToList();
+        }
+
+        counts = new();
+        var notDrawn = new Dictionary<string, int>();
+
+        foreach (var (region, district, jobs) in rows)
+        {
+            var inAuckland = region.Equals(TradeMeBoundaries.RegionName, StringComparison.OrdinalIgnoreCase);
+            if (inAuckland && district != "" && TradeMeShapes.TryGet(district, out var shape))
+            {
+                counts[shape.Name] = counts.GetValueOrDefault(shape.Name) + jobs;
+                continue;
+            }
+
+            var label = district == "" ? (region == "" ? "No district" : $"{region} (no district)")
+                      : region == "" || inAuckland ? district
+                      : $"{district}, {region}";
+            notDrawn[label] = notDrawn.GetValueOrDefault(label) + jobs;
+        }
+
+        total = counts.Values.Sum();
+        excluded = 0;
+        unmapped = notDrawn.OrderByDescending(c => c.Value).ThenBy(c => c.Key).Select(c => (c.Key, c.Value)).ToList();
+    }
+
+    private void UpdateUnmapped()
+    {
+        if (tradeMe) return;   // the Trade Me list is built with its counts
+
         unmapped = counts
             .Where(c => !sent.Contains(c.Key))
             .OrderByDescending(c => c.Value)
             .ThenBy(c => c.Key)
             .Select(c => (c.Key, c.Value))
             .ToList();
+    }
 
     /// <summary>Sends any outlines the browser doesn't have yet, then the current job counts.</summary>
     private async Task SyncDistrictsAsync(bool fit)
@@ -342,7 +442,7 @@ else if (Lookup.LastError != "")
         if (disposed) return;
         try
         {
-            if (mapReady) await SyncDistrictsAsync(fit: !Lookup.Running);
+            if (mapReady && !tradeMe) await SyncDistrictsAsync(fit: !Lookup.Running);
             StateHasChanged();
         }
         catch (Exception ex) when (ex is JSDisconnectedException or ObjectDisposedException or TaskCanceledException) { }
@@ -379,6 +479,58 @@ else if (Lookup.LastError != "")
         await ApplyFiltersAsync();
     }
 
+    /// <summary>Sends the nine Trade Me district outlines, then the current counts.</summary>
+    private async Task SyncTradeMeAsync()
+    {
+        var payload = TradeMeShapes.All
+            .Select(d => new { name = d.Name, status = DistrictStatus.Outline, geoJson = d.GeoJson, lat = (double?)null, lon = (double?)null, matched = "" })
+            .ToList();
+
+        foreach (var chunk in payload.Chunk(3))
+            await JS.InvokeVoidAsync("jobMap.upsert", new object[] { chunk });
+
+        await JS.InvokeVoidAsync("jobMap.setCounts", counts);
+        await JS.InvokeVoidAsync("jobMap.fit");
+    }
+
+    /// <summary>Switches between the SEEK map (suburbs) and the Trade Me map (districts). Each has its own filters, so they start fresh.</summary>
+    private async Task SetSiteAsync(bool showTradeMe)
+    {
+        if (tradeMe == showTradeMe) return;
+        tradeMe = showTradeMe;
+
+        filter.Source = tradeMe ? JobSources.TradeMe : JobSources.Seek;
+        filter.Location = "";
+        filter.District = "";
+        if (tradeMe) filter.Applicant = "";   // Trade Me jobs have no applicant strength
+
+        if (mapReady) await JS.InvokeVoidAsync("jobMap.clear");
+        sent.Clear();
+        needsFit = true;
+
+        await LoadOptionsAsync();
+        await LoadCountsAsync();
+        if (!mapReady) return;
+
+        try
+        {
+            if (tradeMe)
+            {
+                await SyncTradeMeAsync();
+            }
+            else
+            {
+                await SyncDistrictsAsync(fit: true);
+                Lookup.Start();   // fills in any suburb outlines that are still missing
+            }
+        }
+        catch (JSDisconnectedException) { }
+        catch (Exception ex)
+        {
+            mapError = $"Couldn't draw the districts: {ex.Message}";
+        }
+    }
+
     private async Task SetModeAsync(bool showFavourites)
     {
         if (favourites == showFavourites) return;
@@ -390,7 +542,8 @@ else if (Lookup.LastError != "")
     [JSInvokable]
     public Task DistrictClicked(string name) => InvokeAsync(() =>
     {
-        var query = filter.ToQueryString(favourites, name);
+        // The Trade Me map's regions are Trade Me districts, which the Jobs page filters on separately from Location.
+        var query = tradeMe ? filter.ToQueryString(favourites, district: name) : filter.ToQueryString(favourites, name);
         Nav.NavigateTo((favourites ? "/favourites" : "/") + query);
     });
 
