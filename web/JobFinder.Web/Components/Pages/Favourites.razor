@@ -1,6 +1,7 @@
 @page "/favourites"
 @inherits FilteredPageBase
 @inject IDbContextFactory<JobDbContext> DbFactory
+@inject CoverLetterService Letters
 
 <PageTitle>Favourites - Job Finder</PageTitle>
 
@@ -8,6 +9,18 @@
     <button type="button" class="@(IsTradeMe ? "" : "active")" aria-pressed="@(!IsTradeMe)" @onclick="() => SetSourceAsync(JobSources.Seek)">SEEK</button>
     <button type="button" class="@(IsTradeMe ? "active" : "")" aria-pressed="@IsTradeMe" @onclick="() => SetSourceAsync(JobSources.TradeMe)">Trade Me</button>
 </div>
+
+<div class="mode-toggle" role="group" aria-label="What clicking a job does">
+    <button type="button" class="@(coverMode ? "active" : "")" aria-pressed="@coverMode" @onclick="ToggleCoverMode">Generate Cover Letter</button>
+</div>
+
+@if (coverMode)
+{
+    <p class="queue-message" role="status">
+        Cover letter mode is on. Click a job to write its cover letter from your CV, or to open the one you already saved.
+        Your CV, API key and prompt are on the <a href="documents">Documents</a> page.
+    </p>
+}
 
 <section class="filters" aria-label="Search and filter favourites">
     <label class="field field-wide">
@@ -95,7 +108,7 @@
 <div class="cards">
     @foreach (var job in items)
     {
-        <JobCard Item="job" ExtraTags="PillsFor(job.Detail!)" Note="@($"Details scraped {JobDisplay.Utc(job.Detail!.ScrapedAt)}")" OnSelected="Select" />
+        <JobCard Item="job" ExtraTags="PillsFor(job)" Note="@($"Details scraped {JobDisplay.Utc(job.Detail!.ScrapedAt)}")" OnSelected="Select" />
     }
 </div>
 
@@ -120,6 +133,68 @@
 
             <h3>From the search results card</h3>
             <DetailList Rows="JobDisplay.JobRows(sel)" />
+        </div>
+    </div>
+}
+
+@if (letterJob is not null)
+{
+    <div class="overlay" @onclick="CloseLetter">
+        <div class="modal" role="dialog" aria-modal="true" aria-label="Cover letter for @letterJob.Title" @onclick:stopPropagation>
+            <button type="button" class="close" @onclick="CloseLetter" aria-label="Close">Close</button>
+            <h2>Cover letter</h2>
+            <p class="muted">@(letterJob.Detail?.Title is { Length: > 0 } t ? t : letterJob.Title)@(Company(letterJob) != "" ? $" at {Company(letterJob)}" : "")</p>
+
+            @if (generating)
+            {
+                <p class="map-status" role="status">Writing your cover letter with Gemini. This usually takes 5 to 20 seconds...</p>
+            }
+            else
+            {
+                if (letterError is not null)
+                {
+                    <p class="map-status map-status-error" role="alert">@letterError</p>
+                }
+                if (letterSaved is not null || letterText != "")
+                {
+                    <p class="map-status" role="note">Check it carefully before you send it: names, facts and anything Gemini may have got wrong.</p>
+                    <label class="field">
+                        <span>Letter (edit as you like)</span>
+                        <textarea rows="22" @bind="letterText" @bind:event="oninput"></textarea>
+                    </label>
+                    <p class="muted">
+                        @WordCount(letterText) words.
+                        @if (letterSaved is not null)
+                        {
+                            <text> Saved @JobDisplay.Utc(letterSaved.UpdatedAt).</text>
+                        }
+                        @if (Dirty)
+                        {
+                            <text> You have unsaved changes.</text>
+                        }
+                    </p>
+                }
+                <div class="actions">
+                    <button type="button" class="primary" @onclick="SaveLetterAsync" disabled="@(!Dirty || letterText.Trim() == "")">Save</button>
+                    @if (letterSaved is not null && !Dirty)
+                    {
+                        <a class="primary" href="@($"api/cover-letters/{Uri.EscapeDataString(letterJob.Id)}/docx")" download>Download .docx</a>
+                    }
+                    else
+                    {
+                        <span class="muted">Save to download as .docx</span>
+                    }
+                    <button type="button" class="link-button" @onclick="RegenerateAsync">@(letterSaved is null && letterText == "" ? "Generate" : "Regenerate")</button>
+                    @if (letterSaved is not null)
+                    {
+                        <button type="button" class="link-button" @onclick="DeleteLetterAsync">Delete</button>
+                    }
+                </div>
+                if (letterSaved is not null)
+                {
+                    <p class="muted">Regenerate replaces the saved letter, including your edits.</p>
+                }
+            }
         </div>
     </div>
 }
@@ -158,9 +233,11 @@
     }
 
     /// <summary>The pills shown on a card: how to make contact, and whether the ad lists work hours.</summary>
-    private static IReadOnlyList<Pill> PillsFor(JobDetail d)
+    private IReadOnlyList<Pill> PillsFor(Job job)
     {
+        var d = job.Detail!;
         var pills = new List<Pill>();
+        if (withLetters.Contains(job.Id)) pills.Add(new Pill("Cover letter", "tag-letter"));
 
         var hasPhone = d.Phones != "";
         var hasEmail = d.Emails != "";
@@ -232,6 +309,7 @@
             items = matched.Skip((pageNumber - 1) * PageSize).Take(PageSize).ToList();
         }
 
+        withLetters = await Letters.JobIdsWithLettersAsync(items.Select(j => j.Id));
         loading = false;
     }
 
@@ -257,6 +335,99 @@
         if (pageNumber < TotalPages) { pageNumber++; await LoadAsync(); }
     }
 
-    private void Select(Job job) => selected = job;
+    private async Task Select(Job job)
+    {
+        if (!coverMode) { selected = job; return; }
+        await OpenLetterAsync(job);
+    }
     private void Close() => selected = null;
+
+    // ---- Cover letters ----
+
+    private bool coverMode, generating;
+    private Job? letterJob;
+    private CoverLetter? letterSaved;
+    private string letterText = "";
+    private string? letterError;
+    private HashSet<string> withLetters = new();
+
+    private bool Dirty => letterText.Trim() != (letterSaved?.Text ?? "").Trim();
+
+    private void ToggleCoverMode() => coverMode = !coverMode;
+
+    /// <summary>Opens the saved letter for the job, or writes one if there isn't one yet.</summary>
+    private async Task OpenLetterAsync(Job job)
+    {
+        letterJob = job;
+        letterError = null;
+        letterSaved = await Letters.GetAsync(job.Id);
+        letterText = letterSaved?.Text ?? "";
+        if (letterSaved is null) await GenerateAsync();
+    }
+
+    private async Task RegenerateAsync() => await GenerateAsync();
+
+    private async Task GenerateAsync()
+    {
+        if (letterJob is null) return;
+        var job = letterJob;
+        generating = true;
+        letterError = null;
+        StateHasChanged();
+        try
+        {
+            var letter = await Letters.GenerateAsync(job);
+            if (letterJob?.Id != job.Id) return;   // closed or switched while it was writing
+            letterSaved = letter;
+            letterText = letter.Text;
+            withLetters.Add(job.Id);
+        }
+        catch (Exception ex)
+        {
+            letterError = ex.Message;
+        }
+        finally
+        {
+            generating = false;
+        }
+    }
+
+    private async Task SaveLetterAsync()
+    {
+        if (letterJob is null) return;
+        try
+        {
+            await Letters.SaveAsync(letterJob.Id, letterText);
+            letterSaved = await Letters.GetAsync(letterJob.Id);
+            letterText = letterSaved?.Text ?? letterText;
+            withLetters.Add(letterJob.Id);
+            letterError = null;
+        }
+        catch (Exception ex)
+        {
+            letterError = ex.Message;
+        }
+    }
+
+    private async Task DeleteLetterAsync()
+    {
+        if (letterJob is null) return;
+        await Letters.DeleteAsync(letterJob.Id);
+        withLetters.Remove(letterJob.Id);
+        letterSaved = null;
+        letterText = "";
+    }
+
+    private void CloseLetter()
+    {
+        letterJob = null;
+        letterSaved = null;
+        letterText = "";
+        letterError = null;
+    }
+
+    private static string Company(Job j) => j.Detail?.Advertiser is { Length: > 0 } a ? a : j.Company;
+
+    private static int WordCount(string s) =>
+        s.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length;
 }

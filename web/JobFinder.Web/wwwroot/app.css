@@ -320,3 +320,18 @@ input[type="number"], textarea {
 }
 textarea { resize: vertical; }
 .check-list { display: flex; flex-wrap: wrap; gap: 0.25rem 1.5rem; margin: 0.25rem 0 0.75rem; }
+
+/* Cover letters and Documents page */
+.tag-letter { font-weight: 600; color: var(--accent-ink); background: var(--accent); border: 1px solid var(--accent); }
+a.primary { display: inline-block; text-decoration: none; }
+textarea.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.85rem; }
+input[type="text"], input[type="password"] {
+  width: 100%;
+  padding: 0.5rem 0.6rem;
+  font: inherit;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+details summary { cursor: pointer; margin-bottom: 0.5rem; }

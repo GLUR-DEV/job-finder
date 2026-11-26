@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SEEK Job Card Scraper",
-  "version": "1.6.5",
+  "version": "1.7.0",
   "description": "Reads job cards on SEEK and Trade Me search pages and exports them to CSV.",
   "permissions": [
     "storage",

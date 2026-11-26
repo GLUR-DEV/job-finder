@@ -16,7 +16,7 @@ builder.Services.AddDbContextFactory<DistrictDbContext>(o =>
 builder.Services.AddHttpClient("nominatim", c =>
 {
     c.BaseAddress = new Uri("https://nominatim.openstreetmap.org/");
-    c.DefaultRequestHeaders.UserAgent.ParseAdd("JobFinder/1.6.5 (personal job search tool; https://github.com/GLUR-DEV/job-finder)");
+    c.DefaultRequestHeaders.UserAgent.ParseAdd("JobFinder/1.7.0 (personal job search tool; https://github.com/GLUR-DEV/job-finder)");
     c.DefaultRequestHeaders.AcceptLanguage.ParseAdd("en");
 });
 builder.Services.AddSingleton<SuburbBoundaries>();
@@ -33,6 +33,17 @@ builder.Services.AddHttpClient("ntfy", c =>
 });
 builder.Services.AddSingleton<NtfyClient>();
 builder.Services.AddSingleton<WatchService>();
+
+// Cover letters: the CV, Gemini settings and saved letters live in their own database (documents.db).
+builder.Services.AddDbContextFactory<DocumentsDbContext>(o =>
+    o.UseSqlite(builder.Configuration.GetConnectionString("Documents") ?? "Data Source=documents.db"));
+builder.Services.AddHttpClient("gemini", c =>
+{
+    c.BaseAddress = new Uri(GeminiClient.BaseUrl);
+    c.Timeout = TimeSpan.FromSeconds(120);
+});
+builder.Services.AddSingleton<GeminiClient>();
+builder.Services.AddSingleton<CoverLetterService>();
 
 var app = builder.Build();
 
@@ -51,6 +62,10 @@ using (var scope = app.Services.CreateScope())
     using var watchDb = watchFactory.CreateDbContext();
     watchDb.Database.EnsureCreated();
     WatchSchema.Upgrade(watchDb);   // adds columns that came after the first watch.db, keeping existing settings
+
+    var docsFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<DocumentsDbContext>>();
+    using var docsDb = docsFactory.CreateDbContext();
+    docsDb.Database.EnsureCreated();
 
     // Replace any circles or "not found" results from earlier runs with official Auckland suburb outlines.
     scope.ServiceProvider.GetRequiredService<DistrictLookupService>().ApplyOfficialBoundaries();
@@ -123,6 +138,21 @@ app.MapPost("/api/job-details", async (JobDetailDto dto, IDbContextFactory<JobDb
     await db.SaveChangesAsync();
     return Results.Ok(new { id, saved = true });
 }).DisableAntiforgery();
+
+// Downloads a saved cover letter as a Word file.
+app.MapGet("/api/cover-letters/{jobId}/docx", async (string jobId, IDbContextFactory<DocumentsDbContext> docsFactory, IDbContextFactory<JobDbContext> jobsFactory) =>
+{
+    await using var docs = await docsFactory.CreateDbContextAsync();
+    var letter = await docs.CoverLetters.AsNoTracking().FirstOrDefaultAsync(c => c.JobId == jobId);
+    if (letter is null) return Results.NotFound(new { error = "No saved cover letter for that job." });
+
+    await using var jobs = await jobsFactory.CreateDbContextAsync();
+    var job = await jobs.Jobs.AsNoTracking().Include(j => j.Detail).FirstOrDefaultAsync(j => j.Id == jobId);
+
+    return Results.File(WordDocs.Write(letter.Text),
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        CoverLetterService.FileName(job));
+});
 
 app.MapRazorComponents<App>().AddInteractiveServerRenderMode();
 

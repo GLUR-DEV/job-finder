@@ -1,0 +1,216 @@
+@page "/documents"
+@inject IDbContextFactory<DocumentsDbContext> DocsFactory
+@inject CoverLetterService Letters
+
+<PageTitle>Documents - Job Finder</PageTitle>
+
+@if (settings is null)
+{
+    <p class="result-count">Loading...</p>
+}
+else
+{
+    <section class="panel" aria-label="Your CV">
+        <h2>Your CV</h2>
+        <p class="queue-note">
+            Upload a PDF, Word (.docx) or text file, or paste your CV below. The text in the box is what's sent with every cover letter,
+            so check that it came through correctly and fix anything that didn't. PDFs are read by Gemini, so save your API key first.
+        </p>
+
+        <label class="field">
+            <span>Upload CV</span>
+            <InputFile OnChange="UploadAsync" accept=".pdf,.docx,.txt,.md" disabled="@busy" />
+        </label>
+        @if (settings.CvFileName != "" || settings.CvUpdatedAt is not null)
+        {
+            <p class="muted">
+                @(settings.CvFileName != "" ? $"Last file: {settings.CvFileName}. " : "")
+                @(settings.CvUpdatedAt is { } at ? $"Updated {at.ToLocalTime():d MMM yyyy h:mm tt}." : "")
+            </p>
+        }
+
+        <label class="field">
+            <span>CV text</span>
+            <textarea rows="16" @bind="cvText" @bind:event="oninput" placeholder="Paste your CV here, or upload a file above."></textarea>
+        </label>
+        <p class="muted">@WordCount(cvText) words</p>
+    </section>
+
+    <section class="panel" aria-label="Gemini settings">
+        <h2>Gemini</h2>
+        <p class="queue-note">
+            Cover letters are written by Google Gemini. Get a free API key at
+            <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> and paste it here.
+            On the free tier, Google may use what you send to improve its models.
+        </p>
+        <label class="field">
+            <span>API key</span>
+            <input type="password" autocomplete="off" @bind="apiKey" placeholder="AIza..." />
+        </label>
+        <label class="field">
+            <span>Model</span>
+            <input type="text" @bind="model" placeholder="@DocumentSettings.DefaultModel" />
+        </label>
+    </section>
+
+    <section class="panel" aria-label="Cover letter prompt">
+        <h2>Cover letter prompt</h2>
+        <p class="queue-note">
+            These are the instructions sent to Gemini for each cover letter. Anything in <code>@("{{double_braces}}")</code> is filled in
+            for the job you click. Empty fields are sent as "@CoverLetterPrompt.NotProvided".
+        </p>
+        <details>
+            <summary>Placeholders you can use</summary>
+            <dl class="watch-status">
+                @foreach (var (name, meaning) in CoverLetterPrompt.Placeholders)
+                {
+                    <dt><code>@("{{" + name + "}}")</code></dt>
+                    <dd>@meaning</dd>
+                }
+            </dl>
+        </details>
+        <label class="field">
+            <span>Prompt</span>
+            <textarea rows="22" class="mono" @bind="prompt" @bind:event="oninput"></textarea>
+        </label>
+        @if (!prompt.Contains("{{cv}}"))
+        {
+            <p class="map-status map-status-error" role="alert">The prompt doesn't include <code>@("{{cv}}")</code>, so your CV won't be sent.</p>
+        }
+        <div class="actions">
+            <button type="button" class="link-button" @onclick="ResetPrompt" disabled="@(prompt == CoverLetterPrompt.Default)">Reset to default</button>
+        </div>
+    </section>
+
+    <div class="actions">
+        <button type="button" class="primary" @onclick="SaveAsync" disabled="@busy">Save</button>
+        @if (busy)
+        {
+            <span class="muted">@busyText</span>
+        }
+    </div>
+
+    if (message is not null)
+    {
+        <p class="@(isError ? "map-status map-status-error" : "queue-message")" role="status">@message</p>
+    }
+}
+
+@code {
+    private DocumentSettings? settings;
+    private string cvText = "", apiKey = "", model = "", prompt = "";
+    private string? pendingFileName;
+    private bool busy, isError;
+    private string busyText = "";
+    private string? message;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        await using var db = await DocsFactory.CreateDbContextAsync();
+        settings = await db.GetSettingsAsync();
+        cvText = settings.CvText;
+        apiKey = settings.GeminiApiKey;
+        model = settings.EffectiveModel;
+        prompt = settings.EffectivePrompt;
+    }
+
+    private async Task UploadAsync(InputFileChangeEventArgs e)
+    {
+        message = null;
+        var file = e.File;
+        if (file.Size > CoverLetterService.MaxCvBytes)
+        {
+            Show("That file is over 10 MB.", error: true);
+            return;
+        }
+
+        busy = true;
+        busyText = "Reading your CV...";
+        StateHasChanged();
+        try
+        {
+            // Save the key first so a PDF can be read with the key just typed in.
+            if (Path.GetExtension(file.Name).Equals(".pdf", StringComparison.OrdinalIgnoreCase))
+                await SaveSettingsAsync(includeCv: false);
+
+            using var ms = new MemoryStream();
+            await using (var s = file.OpenReadStream(CoverLetterService.MaxCvBytes)) await s.CopyToAsync(ms);
+
+            var text = await Letters.ReadCvAsync(file.Name, ms.ToArray());
+            if (text.Trim() == "")
+            {
+                Show("No text was found in that file. If it's a scanned image, paste the text instead.", error: true);
+                return;
+            }
+
+            cvText = text;
+            pendingFileName = file.Name;
+            await SaveSettingsAsync(includeCv: true);
+            Show($"Read {file.Name} and saved it. Check the text below and fix anything that didn't come through.", error: false);
+        }
+        catch (Exception ex)
+        {
+            Show(ex.Message, error: true);
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        busy = true;
+        busyText = "Saving...";
+        try
+        {
+            await SaveSettingsAsync(includeCv: true);
+            Show("Saved.", error: false);
+        }
+        catch (Exception ex)
+        {
+            Show(ex.Message, error: true);
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private async Task SaveSettingsAsync(bool includeCv)
+    {
+        await using var db = await DocsFactory.CreateDbContextAsync();
+        var s = await db.GetSettingsAsync();
+        s.GeminiApiKey = apiKey.Trim();
+        s.Model = string.IsNullOrWhiteSpace(model) ? DocumentSettings.DefaultModel : model.Trim();
+        // Store an empty prompt when it matches the default, so later improvements to the default reach you.
+        s.Prompt = prompt.Trim() == CoverLetterPrompt.Default.Trim() ? "" : prompt;
+
+        if (includeCv && cvText.Trim() != s.CvText.Trim())
+        {
+            s.CvText = cvText.Trim();
+            s.CvUpdatedAt = DateTime.UtcNow;
+        }
+        if (includeCv && pendingFileName is not null)
+        {
+            s.CvFileName = pendingFileName;
+            pendingFileName = null;
+        }
+
+        await db.SaveChangesAsync();
+        settings = s;
+    }
+
+    private void ResetPrompt() => prompt = CoverLetterPrompt.Default;
+
+    private void Show(string text, bool error)
+    {
+        message = text;
+        isError = error;
+    }
+
+    private static int WordCount(string s) =>
+        s.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length;
+}
