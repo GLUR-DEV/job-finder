@@ -57,25 +57,7 @@ Other features:
 
 ---
 
-## How it fits together
-
-```
- ┌─────────────────────────┐          ┌──────────────────────────────────────┐
- │  SEEK / Trade Me pages  │          │   JobFinder.Web  (localhost:5000)    │
- │  content.js reads DOM   │          │                                      │
- └───────────┬─────────────┘          │  Minimal API  ──►  jobs.db           │
-             │ messages               │   /api/jobs          (Jobs,          │
- ┌───────────▼─────────────┐  HTTP    │   /api/queue          JobDetails,    │
- │ popup.js  (manual use)  ├─────────►│   /api/job-details    QueuedJobs)    │
- │ background.js (watch)   │◄─────────┤   /api/watch/*   ──►  watch.db       │
- │ common.js  (shared)     │          │                                      │
- └─────────────────────────┘          │  WatchService ──► ntfy.sh (push)     │
-                                      │  DistrictLookup ─► Nominatim ─► districts.db
-                                      │  CoverLetters ──► Gemini ─► documents.db
-                                      │  Blazor pages: Jobs, Favourites,     │
-                                      │  Map, Watch, Documents               │
-                                      └──────────────────────────────────────┘
-```
+<img width="1600" height="1000" alt="job-finder-02-process-revised-design-flow" src="https://github.com/user-attachments/assets/243fec3e-95df-42d6-8742-edfa55e5efef" />
 
 The **site owns all state and scheduling**. The extension only does the parts that need a real browser: reading SEEK and Trade Me pages as you see them.
 
@@ -228,16 +210,7 @@ All endpoints are served by `Program.cs` and used by the extension. They have no
 
 Four SQLite databases are created next to the app with `EnsureCreated()`. There are no EF migrations, apart from `WatchSchema.Upgrade`, which adds newer columns to an existing `watch.db`.
 
-| File | DbContext | Contents |
-|---|---|---|
-| `jobs.db` | `JobDbContext` | `Jobs` (card data from both sites), `JobDetails` (full ad, contacts, skills, apply info), `QueuedJobs` |
-| `watch.db` | `WatchDbContext` | One `WatchSettings` row per site (SEEK `Id 1`, Trade Me `Id 2`) |
-| `districts.db` | `DistrictDbContext` | Cached map outlines and centres per location |
-| `documents.db` | `DocumentsDbContext` | CV text, Gemini key/model/prompt, saved `CoverLetters` |
-
-`*.db`, `*.db-shm` and `*.db-wal` are git-ignored. To start over, stop the app and delete the files. **`documents.db` holds your Gemini API key in plain text**, so don't share it.
-
----
+<img width="1600" height="1000" alt="job-finder-01-process-wireframe-data-model" src="https://github.com/user-attachments/assets/72a38536-c4bf-4731-bbaa-4f69c8d4c5bb" />
 
 ## Project structure
 
