@@ -12,6 +12,9 @@ public class GeminiClient(IHttpClientFactory httpFactory)
 {
     public const string BaseUrl = "https://generativelanguage.googleapis.com/v1beta/";
 
+    /// <summary>Waits between attempts when Gemini is busy: 4 attempts in all, about 20 seconds of waiting at most.</summary>
+    private static readonly TimeSpan[] RetryDelays = { TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(6), TimeSpan.FromSeconds(10) };
+
     /// <summary>Sends one text prompt and returns the reply text.</summary>
     public Task<string> GenerateAsync(string apiKey, string model, string prompt, double temperature, CancellationToken ct = default)
     {
@@ -42,17 +45,27 @@ public class GeminiClient(IHttpClientFactory httpFactory)
         };
 
         var http = httpFactory.CreateClient("gemini");
-        using var req = new HttpRequestMessage(HttpMethod.Post, $"models/{Uri.EscapeDataString(model)}:generateContent")
+        string json;
+        for (var attempt = 1; ; attempt++)
         {
-            Content = JsonContent.Create(body),
-        };
-        req.Headers.Add("x-goog-api-key", apiKey.Trim());
+            using var req = new HttpRequestMessage(HttpMethod.Post, $"models/{Uri.EscapeDataString(model)}:generateContent")
+            {
+                Content = JsonContent.Create(body),
+            };
+            req.Headers.Add("x-goog-api-key", apiKey.Trim());
 
-        using var res = await http.SendAsync(req, ct);
-        var json = await res.Content.ReadAsStringAsync(ct);
+            using var res = await http.SendAsync(req, ct);
+            json = await res.Content.ReadAsStringAsync(ct);
+            if (res.IsSuccessStatusCode) break;
 
-        if (!res.IsSuccessStatusCode)
-            throw new HttpRequestException(ErrorMessage((int)res.StatusCode, json));
+            // Busy (503/500/502/504) is usually over within seconds, so wait and try again a few times before giving up.
+            var status = (int)res.StatusCode;
+            var retryable = status is 500 or 502 or 503 or 504;
+            if (!retryable || attempt >= RetryDelays.Length + 1)
+                throw new HttpRequestException(ErrorMessage(status, json) + (retryable ? $" (tried {attempt} times)" : ""));
+
+            await Task.Delay(RetryDelays[attempt - 1], ct);
+        }
 
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
